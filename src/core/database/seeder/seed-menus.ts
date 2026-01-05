@@ -28,7 +28,7 @@ export class SeedMenus {
       where: { deleted_at: null },
     });
     const permMap = new Map<string, any>();
-    permissions.forEach(perm => permMap.set(perm.code, perm));
+    permissions.forEach((perm: any) => permMap.set(perm.code, perm));
 
     // Seed menus - Mỗi menu chỉ có 1 bản ghi duy nhất, không phân biệt context
     // Menu ROUTE: có 1 permission (dùng required_permission_id)

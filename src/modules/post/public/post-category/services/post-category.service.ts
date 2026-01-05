@@ -59,7 +59,7 @@ export class PostCategoryService {
     ]);
 
     return {
-      data: data.map(cat => ({
+      data: data.map((cat: any) => ({
         ...cat,
         id: Number(cat.id),
         parent_id: cat.parent ? Number(cat.parent.id) : null,
@@ -67,7 +67,7 @@ export class PostCategoryService {
           ...cat.parent,
           id: Number(cat.parent.id),
         } : null,
-        children: cat.children?.map(child => ({
+        children: cat.children?.map((child: any) => ({
           ...child,
           id: Number(child.id),
         })) || [],
@@ -131,7 +131,7 @@ export class PostCategoryService {
         ...category.parent,
         id: Number(category.parent.id),
       } : null,
-      children: category.children?.map(child => ({
+      children: category.children?.map((child: any) => ({
         ...child,
         id: Number(child.id),
       })) || [],

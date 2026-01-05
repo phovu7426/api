@@ -30,7 +30,18 @@
     "seed:refresh": "ts-node -r tsconfig-paths/register src/core/database/cli/seed.ts --refresh",
     "fix:admin": "ts-node -r tsconfig-paths/register src/core/database/cli/fix-admin.ts",
     "seed:posts": "ts-node -r tsconfig-paths/register src/core/database/cli/seed-posts.ts",
-    "seed:posts:refresh": "ts-node -r tsconfig-paths/register src/core/database/cli/seed-posts.ts --refresh"
+    "seed:posts:refresh": "ts-node -r tsconfig-paths/register src/core/database/cli/seed-posts.ts --refresh",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:migrate:reset": "prisma migrate reset",
+    "prisma:seed": "ts-node prisma/seed.ts",
+    "prisma:studio": "prisma studio",
+    "prisma:db:push": "prisma db push",
+    "prisma:db:pull": "prisma db pull"
+  },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.940.0",
@@ -69,6 +80,7 @@
     "@nestjs/cli": "^10.2.1",
     "@nestjs/schematics": "^10.0.3",
     "@nestjs/testing": "^10.3.0",
+    "@prisma/adapter-mariadb": "^7.2.0",
     "@prisma/client": "^7.2.0",
     "@types/compression": "^1.8.1",
     "@types/express": "^4.17.21",

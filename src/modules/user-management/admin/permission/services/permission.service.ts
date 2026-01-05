@@ -44,7 +44,7 @@ export class PermissionService {
     ]);
 
     return {
-      data: data.map(perm => ({
+      data: data.map((perm: any) => ({
         ...perm,
         id: Number(perm.id),
         parent_id: perm.parent_id ? Number(perm.parent_id) : null,
@@ -195,7 +195,7 @@ export class PermissionService {
     });
 
     return {
-      data: data.map(perm => ({
+      data: data.map((perm: any) => ({
         id: Number(perm.id),
         code: perm.code,
         name: perm.name,

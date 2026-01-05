@@ -53,7 +53,7 @@ export class AdminGroupService {
     ]);
 
     return {
-      data: data.map(group => ({
+      data: data.map((group: any) => ({
         ...group,
         id: Number(group.id),
         context_id: Number(group.context_id),

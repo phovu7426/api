@@ -51,7 +51,7 @@ export class AuthService {
         status: true,
       },
     });
-    const user = users.find(u => u.email?.toLowerCase() === dto.email.toLowerCase());
+    const user = users.find((u: any) => u.email?.toLowerCase() === dto.email.toLowerCase());
 
     let authError: string | null = null;
 

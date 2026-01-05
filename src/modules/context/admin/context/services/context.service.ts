@@ -49,7 +49,7 @@ export class AdminContextService {
     ]);
 
     return {
-      data: data.map(ctx => ({
+      data: data.map((ctx: any) => ({
         ...ctx,
         id: Number(ctx.id),
         ref_id: ctx.ref_id ? Number(ctx.ref_id) : null,

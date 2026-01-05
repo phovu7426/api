@@ -141,11 +141,11 @@ model Role {
   code             String          @db.VarChar(100)
   name             String?         @db.VarChar(150)
   status           String          @default("active") @db.VarChar(30)
-  parent_id        BigInt?         @db.BigInt
+  parent_id        BigInt?         @db.UnsignedBigInt
 
   parent           Role?           @relation("RoleToParent", fields: [parent_id], references: [id])
   children         Role[]          @relation("RoleToParent")
-  permissions      Permission[]    @relation("RolePermissions")
+  role_permissions RolePermission[]
   role_contexts    RoleContext[]
   user_role_assignments UserRoleAssignment[]
 
@@ -166,11 +166,11 @@ model Permission {
   scope            String        @default("context") @db.VarChar(30)
   name             String?       @db.VarChar(150)
   status           String        @default("active") @db.VarChar(30)
-  parent_id        BigInt?       @db.BigInt
+  parent_id        BigInt?       @db.UnsignedBigInt
 
   parent           Permission?   @relation("PermissionToParent", fields: [parent_id], references: [id])
   children         Permission[]  @relation("PermissionToParent")
-  roles            Role[]        @relation("RolePermissions")
+  role_permissions RolePermission[]
   menu_permissions MenuPermission[]
   menus            Menu[]
 
@@ -180,17 +180,46 @@ model Permission {
   @@index([deleted_at], map: "idx_deleted_at")
 }
 
+model RolePermission {
+  id               BigInt     @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?    @db.UnsignedBigInt
+  updated_user_id  BigInt?    @db.UnsignedBigInt
+  created_at       DateTime   @default(now()) @db.DateTime(0)
+  updated_at       DateTime   @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?  @db.DateTime(0)
+
+  role_id       BigInt @db.UnsignedBigInt
+  permission_id BigInt @db.UnsignedBigInt
+
+  role       Role       @relation(fields: [role_id], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permission_id], references: [id], onDelete: Cascade)
+
+  @@map("role_permissions")
+  @@unique([role_id, permission_id])
+  @@index([role_id])
+  @@index([permission_id])
+  @@index([deleted_at], map: "idx_deleted_at")
+}
+
 model RoleContext {
+  id               BigInt     @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?    @db.UnsignedBigInt
+  updated_user_id  BigInt?    @db.UnsignedBigInt
+  created_at       DateTime   @default(now()) @db.DateTime(0)
+  updated_at       DateTime   @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?  @db.DateTime(0)
+
   role_id    BigInt @db.UnsignedBigInt
   context_id BigInt @db.UnsignedBigInt
 
   role    Role    @relation(fields: [role_id], references: [id])
   context Context @relation(fields: [context_id], references: [id])
 
-  @@id([role_id, context_id])
   @@map("role_contexts")
+  @@unique([role_id, context_id])
   @@index([role_id])
   @@index([context_id])
+  @@index([deleted_at], map: "idx_deleted_at")
 }
 
 model Context {
@@ -296,7 +325,7 @@ model PostCategory {
 
   parent           PostCategory? @relation("PostCategoryToParent", fields: [parent_id], references: [id])
   children         PostCategory[] @relation("PostCategoryToParent")
-  posts            Post[]        @relation("PostCategories")
+  post_categories   PostPostCategory[]
   primary_posts    Post[]
 
   @@map("postcategory")
@@ -327,7 +356,7 @@ model PostTag {
   meta_description String?     @db.Text
   canonical_url    String?     @db.VarChar(255)
 
-  posts            Post[]      @relation("PostTags")
+  post_tags        PostPostTag[]
 
   @@map("posttag")
   @@index([name], map: "idx_name")
@@ -336,6 +365,32 @@ model PostTag {
   @@index([created_at], map: "idx_created_at")
   @@index([status, created_at], map: "idx_status_created_at")
   @@index([deleted_at], map: "idx_deleted_at")
+}
+
+model PostPostCategory {
+  post_id         BigInt @db.UnsignedBigInt
+  postcategory_id BigInt @db.UnsignedBigInt
+
+  post         Post         @relation(fields: [post_id], references: [id], onDelete: Cascade)
+  postcategory PostCategory @relation(fields: [postcategory_id], references: [id], onDelete: Cascade)
+
+  @@id([post_id, postcategory_id])
+  @@map("post_postcategory")
+  @@index([post_id])
+  @@index([postcategory_id])
+}
+
+model PostPostTag {
+  post_id    BigInt @db.UnsignedBigInt
+  posttag_id BigInt @db.UnsignedBigInt
+
+  post    Post    @relation(fields: [post_id], references: [id], onDelete: Cascade)
+  posttag PostTag @relation(fields: [posttag_id], references: [id], onDelete: Cascade)
+
+  @@id([post_id, posttag_id])
+  @@map("post_posttag")
+  @@index([post_id])
+  @@index([posttag_id])
 }
 
 model Post {
@@ -370,8 +425,8 @@ model Post {
   group_id         BigInt?       @db.UnsignedBigInt
 
   primary_category PostCategory? @relation(fields: [primary_postcategory_id], references: [id])
-  categories       PostCategory[] @relation("PostCategories")
-  tags             PostTag[]     @relation("PostTags")
+  post_categories  PostPostCategory[]
+  post_tags        PostPostTag[]
 
   @@map("posts")
   @@index([name], map: "idx_name")

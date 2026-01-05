@@ -1,4 +1,43 @@
 import 'reflect-metadata';
+// CRITICAL: Load .env file FIRST, before any other imports
+// This ensures environment variables are available before PrismaClient is imported
+import 'dotenv/config';
+
+// CRITICAL: Ensure DATABASE_URL is set BEFORE importing any modules
+// This must happen before PrismaClient is imported anywhere
+if (!process.env.DATABASE_URL) {
+  // Build DATABASE_URL from individual DB_* variables if not set
+  const host = process.env.DB_HOST || 'localhost';
+  const port = process.env.DB_PORT || '3306';
+  const username = process.env.DB_USERNAME || '';
+  const password = process.env.DB_PASSWORD || '';
+  const database = process.env.DB_DATABASE || '';
+  const charset = process.env.DB_CHARSET || 'utf8mb4';
+  const timezone = process.env.DB_TIMEZONE || '+07:00';
+  const ssl = process.env.DB_SSL === 'true';
+
+  if (username && database) {
+    const encodedPassword = password ? encodeURIComponent(password) : '';
+    const authPart = password ? `${username}:${encodedPassword}` : username;
+    
+    const params = new URLSearchParams({
+      charset,
+      timezone,
+    });
+    if (ssl) {
+      params.append('sslmode', 'require');
+    }
+    
+    process.env.DATABASE_URL = `mysql://${authPart}@${host}:${port}/${database}?${params.toString()}`;
+    console.log('[SeedCLI] DATABASE_URL built from DB_* variables');
+  }
+}
+
+// Verify DATABASE_URL is set
+if (!process.env.DATABASE_URL) {
+  throw new Error('DATABASE_URL is required. Please set DATABASE_URL or DB_* variables in .env file');
+}
+
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '@/app.module';
 import { SeedService } from '@/core/database/seeder/seed-data';

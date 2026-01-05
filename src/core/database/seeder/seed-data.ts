@@ -65,9 +65,6 @@ export class SeedService {
       await this.seedGeneralConfigs.seed();
       await this.seedEmailConfigs.seed();
 
-      // Groups and contexts (sau khi có users và system context)
-      await this.seedGroups.seed();
-
       this.logger.log('Database seeding completed successfully');
     } catch (error) {
       this.logger.error('Database seeding failed', error);

@@ -3,12 +3,43 @@
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
+// Build DATABASE_URL from individual DB_* variables if DATABASE_URL is not set
+function getDatabaseUrl(): string {
+  // If DATABASE_URL is directly set, use it
+  if (process.env.DATABASE_URL) {
+    return process.env.DATABASE_URL;
+  }
+
+  // Otherwise, build from individual DB_* variables
+  const host = process.env.DB_HOST || 'localhost';
+  const port = process.env.DB_PORT || '3306';
+  const username = process.env.DB_USERNAME || '';
+  const password = process.env.DB_PASSWORD || '';
+  const database = process.env.DB_DATABASE || '';
+  const charset = process.env.DB_CHARSET || 'utf8mb4';
+  const timezone = process.env.DB_TIMEZONE || '+07:00';
+  const ssl = process.env.DB_SSL === 'true';
+
+  // Build MySQL connection URL
+  const encodedPassword = encodeURIComponent(password);
+  const params = new URLSearchParams({
+    charset,
+    timezone,
+  });
+  if (ssl) {
+    params.append('sslmode', 'require');
+  }
+  const url = `mysql://${username}:${encodedPassword}@${host}:${port}/${database}?${params.toString()}`;
+
+  return url;
+}
+
 export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {
     path: "prisma/migrations",
   },
   datasource: {
-    url: process.env["DATABASE_URL"],
+    url: getDatabaseUrl(),
   },
 });

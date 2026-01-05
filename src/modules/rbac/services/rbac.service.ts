@@ -305,7 +305,7 @@ export class RbacService {
           },
         });
 
-        const validRoleIds = new Set(roleContexts.map(rc => Number(rc.role_id)));
+        const validRoleIds = new Set(roleContexts.map((rc: any) => Number(rc.role_id)));
         const invalidRoles = roles.filter(role => !validRoleIds.has(Number(role.id)));
 
         if (invalidRoles.length > 0) {

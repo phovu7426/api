@@ -245,7 +245,7 @@ export class UserGroupService {
       },
     });
 
-    return members.map(m => ({
+    return members.map((m: any) => ({
       user_id: Number(m.user_id),
       user: m.user ? {
         id: Number(m.user.id),
@@ -281,7 +281,7 @@ export class UserGroupService {
 
     // Xử lý từng group để lấy roles
     const result = await Promise.all(
-      userGroups.map(async (ug) => {
+      userGroups.map(async (ug: any) => {
         const group = ug.group;
 
         // Kiểm tra group có tồn tại không
@@ -320,8 +320,8 @@ export class UserGroupService {
               }
             : null,
           roles: roleAssignments
-            .filter((ra) => ra.role) // Chỉ lấy roles hợp lệ
-            .map((ra) => ({
+            .filter((ra: any) => ra.role) // Chỉ lấy roles hợp lệ
+            .map((ra: any) => ({
               id: Number(ra.role!.id),
               code: ra.role!.code,
               name: ra.role!.name,

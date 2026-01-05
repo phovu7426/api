@@ -49,7 +49,7 @@ export class PostTagService {
     ]);
 
     return {
-      data: data.map(tag => ({
+      data: data.map((tag: any) => ({
         ...tag,
         id: Number(tag.id),
       })),

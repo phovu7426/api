@@ -106,18 +106,30 @@ export class SeedRoles {
     
     this.logger.log(`Total permissions: ${allPermissions.length}`);
 
+    // Get admin user for audit fields
+    const adminUser = await this.prisma.user.findFirst({
+      where: { username: 'admin', deleted_at: null },
+    });
+    const defaultUserId = adminUser ? Number(adminUser.id) : 1;
+
     // ========== SYSTEM CONTEXT ROLES ==========
     
     // ===== System role: Full tất cả quyền =====
     const systemRole = createdRoles.get('system');
     if (systemRole) {
-      await this.prisma.role.update({
-        where: { id: systemRole.id },
-        data: {
-          permissions: {
-            set: allPermissions.map(p => ({ id: p.id })),
-          },
-        },
+      // Xóa tất cả role_permissions cũ
+      await this.prisma.rolePermission.deleteMany({
+        where: { role_id: systemRole.id },
+      });
+      
+      // Tạo mới tất cả role_permissions
+      await this.prisma.rolePermission.createMany({
+        data: allPermissions.map((p: any) => ({
+          role_id: systemRole.id,
+          permission_id: p.id,
+          created_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+          updated_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+        })),
       });
       this.logger.log(`✅ Assigned ${allPermissions.length} permissions to system role (full access)`);
     }
@@ -129,14 +141,21 @@ export class SeedRoles {
         'role.manage',
         'permission.manage',
       ];
-      const systemManagerPerms = allPermissions.filter(p => !excludedPerms.includes(p.code));
-      await this.prisma.role.update({
-        where: { id: systemManagerRole.id },
-        data: {
-          permissions: {
-            set: systemManagerPerms.map(p => ({ id: p.id })),
-          },
-        },
+      const systemManagerPerms = allPermissions.filter((p: any) => !excludedPerms.includes(p.code));
+      
+      // Xóa tất cả role_permissions cũ
+      await this.prisma.rolePermission.deleteMany({
+        where: { role_id: systemManagerRole.id },
+      });
+      
+      // Tạo mới role_permissions
+      await this.prisma.rolePermission.createMany({
+        data: systemManagerPerms.map((p: any) => ({
+          role_id: systemManagerRole.id,
+          permission_id: p.id,
+          created_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+          updated_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+        })),
       });
       this.logger.log(`✅ Assigned ${systemManagerPerms.length} permissions to system_manager role (full trừ vai trò, quyền, phân quyền)`);
     }
@@ -151,14 +170,21 @@ export class SeedRoles {
         'permission.manage',
         'system.manage',
       ];
-      const shopAdminPerms = allPermissions.filter(p => !excludedPerms.includes(p.code));
-      await this.prisma.role.update({
-        where: { id: shopAdminRole.id },
-        data: {
-          permissions: {
-            set: shopAdminPerms.map(p => ({ id: p.id })),
-          },
-        },
+      const shopAdminPerms = allPermissions.filter((p: any) => !excludedPerms.includes(p.code));
+      
+      // Xóa tất cả role_permissions cũ
+      await this.prisma.rolePermission.deleteMany({
+        where: { role_id: shopAdminRole.id },
+      });
+      
+      // Tạo mới role_permissions
+      await this.prisma.rolePermission.createMany({
+        data: shopAdminPerms.map((p: any) => ({
+          role_id: shopAdminRole.id,
+          permission_id: p.id,
+          created_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+          updated_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+        })),
       });
       this.logger.log(`✅ Assigned ${shopAdminPerms.length} permissions to shop_admin role (full trừ vai trò, quyền, phân quyền, hệ thống)`);
     }
@@ -172,14 +198,21 @@ export class SeedRoles {
         'system.manage',
         'user.manage',
       ];
-      const shopManagerPerms = allPermissions.filter(p => !excludedPerms.includes(p.code));
-      await this.prisma.role.update({
-        where: { id: shopManagerRole.id },
-        data: {
-          permissions: {
-            set: shopManagerPerms.map(p => ({ id: p.id })),
-          },
-        },
+      const shopManagerPerms = allPermissions.filter((p: any) => !excludedPerms.includes(p.code));
+      
+      // Xóa tất cả role_permissions cũ
+      await this.prisma.rolePermission.deleteMany({
+        where: { role_id: shopManagerRole.id },
+      });
+      
+      // Tạo mới role_permissions
+      await this.prisma.rolePermission.createMany({
+        data: shopManagerPerms.map((p: any) => ({
+          role_id: shopManagerRole.id,
+          permission_id: p.id,
+          created_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+          updated_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+        })),
       });
       this.logger.log(`✅ Assigned ${shopManagerPerms.length} permissions to shop_manager role (giống shop_admin trừ user.manage)`);
     }
@@ -203,6 +236,12 @@ export class SeedRoles {
       this.logger.warn('System context not found. Skipping role_contexts assignment.');
       return;
     }
+
+    // Get admin user for audit fields
+    const adminUser = await this.prisma.user.findFirst({
+      where: { username: 'admin', deleted_at: null },
+    });
+    const defaultUserId = adminUser ? Number(adminUser.id) : 1;
 
     const roleContextsToCreate: Array<{ role_id: bigint; context_id: bigint; roleName: string }> = [];
 
@@ -261,6 +300,8 @@ export class SeedRoles {
         data: {
           role_id: rcData.role_id,
           context_id: rcData.context_id,
+          created_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+          updated_user_id: defaultUserId ? BigInt(defaultUserId) : null,
         },
       });
       this.logger.log(`✅ Assigned ${rcData.roleName} role to context (id=${Number(rcData.context_id)})`);

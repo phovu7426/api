@@ -62,7 +62,7 @@ export class MenuService {
     ]);
 
     return {
-      data: data.map(menu => ({
+      data: data.map((menu: any) => ({
         ...menu,
         id: Number(menu.id),
         parent_id: menu.parent_id ? Number(menu.parent_id) : null,
@@ -308,22 +308,23 @@ export class MenuService {
     // Get all permissions user has
     const allPerms = new Set<string>();
     const testPerms = menus
-      .filter(m => m.required_permission?.code || m.menu_permissions?.length)
-      .flatMap(m => [
+      .filter((m: any) => m.required_permission?.code || m.menu_permissions?.length)
+      .flatMap((m: any) => [
         ...(m.required_permission?.code ? [m.required_permission.code] : []),
-        ...(m.menu_permissions?.map(mp => mp.permission?.code).filter(Boolean) || []),
+        ...(m.menu_permissions?.map((mp: any) => mp.permission?.code).filter((code: any) => Boolean(code)) || []),
       ]);
 
     // Check each permission
     for (const perm of new Set(testPerms)) {
-      const hasPerm = await this.rbacService.userHasPermissionsInGroup(userId, groupId ?? null, [perm]);
+      const permStr = String(perm); // Convert to string
+      const hasPerm = await this.rbacService.userHasPermissionsInGroup(userId, groupId ?? null, [permStr]);
       if (hasPerm) {
-        allPerms.add(perm);
+        allPerms.add(permStr);
       }
     }
 
     // Filter menus by permissions
-    let filteredMenus = menus.filter(menu => {
+    let filteredMenus = menus.filter((menu: any) => {
       // Menu public always show
       if (menu.is_public) {
         this.logger.debug(`Menu ${menu.code}: PUBLIC - showing`);
@@ -350,8 +351,8 @@ export class MenuService {
       
       // Fallback: If still using menu_permissions (legacy)
       if (menu.menu_permissions && menu.menu_permissions.length > 0) {
-        const menuPermCodes = menu.menu_permissions.map(mp => mp.permission?.code).filter(Boolean);
-        const hasAnyPerm = menuPermCodes.some(code => allPerms.has(code));
+        const menuPermCodes = menu.menu_permissions.map((mp: any) => mp.permission?.code).filter((code: any) => Boolean(code));
+        const hasAnyPerm = menuPermCodes.some((code: any) => allPerms.has(code));
         this.logger.debug(`Menu ${menu.code}: menu_permissions=[${menuPermCodes.join(', ')}], hasAny=${hasAnyPerm}`);
         if (hasAnyPerm) {
           return true;
@@ -383,7 +384,7 @@ export class MenuService {
         'config-management',
       ];
       
-      filteredMenus = filteredMenus.filter(menu => {
+      filteredMenus = filteredMenus.filter((menu: any) => {
         // Check by permission code
         if (menu.required_permission?.code && systemOnlyPermissions.includes(menu.required_permission.code)) {
           this.logger.debug(`Menu ${menu.code}: SYSTEM-ONLY (permission=${menu.required_permission.code}) - filtered out`);
@@ -402,7 +403,7 @@ export class MenuService {
 
     this.logger.debug(`Filtered ${filteredMenus.length} menus from ${menus.length} total menus`);
 
-    const tree = this.buildTree(filteredMenus.map(m => ({
+    const tree = this.buildTree(filteredMenus.map((m: any) => ({
       ...m,
       id: Number(m.id),
       parent_id: m.parent_id ? Number(m.parent_id) : null,

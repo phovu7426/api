@@ -31,8 +31,8 @@ export class UserService {
         where: { group_id: BigInt(groupId) },
         select: { user_id: true },
       });
-      userIds = userGroups.map(ug => ug.user_id);
-      if (userIds.length === 0) {
+      userIds = userGroups.map((ug: any) => ug.user_id);
+      if (!userIds || userIds.length === 0) {
         return {
           data: [],
           meta: {
@@ -340,7 +340,7 @@ export class UserService {
     });
 
     return {
-      data: data.map(user => ({
+      data: data.map((user: any) => ({
         id: Number(user.id),
         username: user.username,
         email: user.email,

@@ -82,7 +82,7 @@ export class PostService {
     ]);
 
     return {
-      data: data.map(post => ({
+      data: data.map((post: any) => ({
         ...post,
         id: Number(post.id),
         primary_category: post.primary_category ? {

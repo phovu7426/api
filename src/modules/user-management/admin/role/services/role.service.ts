@@ -3,6 +3,7 @@ import { PrismaService } from '@/core/database/prisma/prisma.service';
 import { Prisma } from '@prisma/client';
 import { RbacCacheService } from '@/modules/rbac/services/rbac-cache.service';
 import { RequestContext } from '@/common/utils/request-context.util';
+import { Auth } from '@/common/utils/auth.util';
 
 @Injectable()
 export class RoleService {
@@ -28,8 +29,8 @@ export class RoleService {
         where: { context_id: BigInt(contextId) },
         select: { role_id: true },
       });
-      roleIds = roleContexts.map(rc => rc.role_id);
-      if (roleIds.length === 0) {
+      roleIds = roleContexts.map((rc: any) => rc.role_id);
+      if (!roleIds || roleIds.length === 0) {
         return {
           data: [],
           meta: {
@@ -61,7 +62,11 @@ export class RoleService {
     const include: Prisma.RoleInclude = {
       parent: true,
       children: true,
-      permissions: true,
+      role_permissions: {
+        include: {
+          permission: true,
+        },
+      },
       role_contexts: context && context.type === 'system' ? {
         include: {
           context: true,
@@ -112,7 +117,11 @@ export class RoleService {
     const include: Prisma.RoleInclude = {
       parent: true,
       children: true,
-      permissions: true,
+      role_permissions: {
+        include: {
+          permission: true,
+        },
+      },
       role_contexts: context && context.type === 'system' ? {
         include: {
           context: true,
@@ -174,14 +183,20 @@ export class RoleService {
         parent_id: data.parent_id ? BigInt(data.parent_id) : null,
         created_user_id: createdBy ? BigInt(createdBy) : null,
         updated_user_id: createdBy ? BigInt(createdBy) : null,
-        permissions: data.permission_ids && data.permission_ids.length > 0 ? {
-          connect: data.permission_ids.map((id: number) => ({ id: BigInt(id) })),
+        role_permissions: data.permission_ids && data.permission_ids.length > 0 ? {
+          create: data.permission_ids.map((id: number) => ({
+            permission_id: BigInt(id),
+          })),
         } : undefined,
       },
       include: {
         parent: true,
         children: true,
-        permissions: true,
+        role_permissions: {
+          include: {
+            permission: true,
+          },
+        },
         role_contexts: {
           include: {
             context: true,
@@ -192,11 +207,15 @@ export class RoleService {
 
     // Handle context_ids
     if (this.tempContextIds !== null) {
+      const currentUserId = Auth.id();
+      
       if (this.tempContextIds.length > 0) {
         await this.prisma.roleContext.createMany({
           data: this.tempContextIds.map(contextId => ({
             role_id: role.id,
             context_id: BigInt(contextId),
+            created_user_id: currentUserId ? BigInt(currentUserId) : null,
+            updated_user_id: currentUserId ? BigInt(currentUserId) : null,
           })),
         });
       }
@@ -240,6 +259,28 @@ export class RoleService {
       }
     }
 
+    // Handle permission_ids separately if provided
+    if (data.permission_ids !== undefined) {
+      const currentUserId = Auth.id();
+      
+      // Delete all existing role_permissions
+      await this.prisma.rolePermission.deleteMany({
+        where: { role_id: BigInt(id) },
+      });
+      
+      // Create new role_permissions if any
+      if (data.permission_ids.length > 0) {
+        await this.prisma.rolePermission.createMany({
+          data: data.permission_ids.map((permId: number) => ({
+            role_id: BigInt(id),
+            permission_id: BigInt(permId),
+            created_user_id: currentUserId ? BigInt(currentUserId) : null,
+            updated_user_id: currentUserId ? BigInt(currentUserId) : null,
+          })),
+        });
+      }
+    }
+
     const role = await this.prisma.role.update({
       where: { id: BigInt(id) },
       data: {
@@ -247,19 +288,16 @@ export class RoleService {
         ...(data.name !== undefined && { name: data.name }),
         ...(data.status !== undefined && { status: data.status }),
         ...(data.parent_id !== undefined && { parent_id: data.parent_id ? BigInt(data.parent_id) : null }),
-        ...(data.permission_ids !== undefined && {
-          permissions: {
-            set: data.permission_ids.length > 0 
-              ? data.permission_ids.map((id: number) => ({ id: BigInt(id) }))
-              : [],
-          },
-        }),
         updated_user_id: updatedBy ? BigInt(updatedBy) : existing.updated_user_id,
       },
       include: {
         parent: true,
         children: true,
-        permissions: true,
+        role_permissions: {
+          include: {
+            permission: true,
+          },
+        },
         role_contexts: {
           include: {
             context: true,
@@ -270,6 +308,8 @@ export class RoleService {
 
     // Handle context_ids sync
     if (this.tempContextIds !== null) {
+      const currentUserId = Auth.id();
+      
       // Delete all old contexts
       await this.prisma.roleContext.deleteMany({
         where: { role_id: BigInt(id) },
@@ -281,6 +321,8 @@ export class RoleService {
           data: this.tempContextIds.map(contextId => ({
             role_id: BigInt(id),
             context_id: BigInt(contextId),
+            created_user_id: currentUserId ? BigInt(currentUserId) : null,
+            updated_user_id: currentUserId ? BigInt(currentUserId) : null,
           })),
         });
       }
@@ -356,17 +398,33 @@ export class RoleService {
       }
     }
 
-    const updated = await this.prisma.role.update({
+    const currentUserId = Auth.id();
+    
+    // Delete all existing role_permissions
+    await this.prisma.rolePermission.deleteMany({
+      where: { role_id: BigInt(roleId) },
+    });
+    
+    // Create new role_permissions if any
+    if (permissionIds.length > 0) {
+      await this.prisma.rolePermission.createMany({
+        data: permissionIds.map(id => ({
+          role_id: BigInt(roleId),
+          permission_id: BigInt(id),
+          created_user_id: currentUserId ? BigInt(currentUserId) : null,
+          updated_user_id: currentUserId ? BigInt(currentUserId) : null,
+        })),
+      });
+    }
+
+    const updated = await this.prisma.role.findUnique({
       where: { id: BigInt(roleId) },
-      data: {
-        permissions: {
-          set: permissionIds.length > 0 
-            ? permissionIds.map(id => ({ id: BigInt(id) }))
-            : [],
-        },
-      },
       include: {
-        permissions: true,
+        role_permissions: {
+          include: {
+            permission: true,
+          },
+        },
       },
     });
 
@@ -407,11 +465,11 @@ export class RoleService {
         name: child.name,
         status: child.status,
       })) || [],
-      permissions: role.permissions?.map((perm: any) => ({
-        id: Number(perm.id),
-        code: perm.code,
-        name: perm.name,
-        status: perm.status,
+      permissions: role.role_permissions?.map((rp: any) => ({
+        id: Number(rp.permission.id),
+        code: rp.permission.code,
+        name: rp.permission.name,
+        status: rp.permission.status,
       })) || [],
     };
 
@@ -464,7 +522,7 @@ export class RoleService {
     });
 
     return {
-      data: data.map(role => ({
+      data: data.map((role: any) => ({
         id: Number(role.id),
         code: role.code,
         name: role.name,

@@ -28,7 +28,7 @@ export class UserContextService {
       distinct: ['id'],
     });
 
-    return contexts.map(ctx => ({
+    return contexts.map((ctx: any) => ({
       ...ctx,
       id: Number(ctx.id),
       ref_id: ctx.ref_id ? Number(ctx.ref_id) : null,
