@@ -1,6 +1,6 @@
 import { IsString, IsOptional, IsEmail, MaxLength, IsArray, IsBoolean, IsNumber, ValidateNested, IsObject } from 'class-validator';
 import { Type } from 'class-transformer';
-import { ContactChannel } from '@/shared/entities/general-config.entity';
+import { ContactChannel } from '@/shared/interfaces/contact-channel.interface';
 
 class ContactChannelDto implements ContactChannel {
   @IsString()

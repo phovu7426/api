@@ -1,10 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
-import { User } from '@/shared/entities/user.entity';
-import { Profile } from '@/shared/entities/profile.entity';
 import { LoginDto } from '@/modules/auth/dto/login.dto';
 import { RegisterDto } from '@/modules/auth/dto/register.dto';
 import { ConfigService } from '@nestjs/config';
@@ -21,8 +18,7 @@ import * as crypto from 'crypto';
 @Injectable()
 export class AuthService {
   constructor(
-    @InjectRepository(User) protected readonly userRepository: Repository<User>,
-    @InjectRepository(Profile) protected readonly profileRepository: Repository<Profile>,
+    private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly redis: RedisUtil,
@@ -42,12 +38,20 @@ export class AuthService {
       );
     }
 
-    // Tìm user bằng email (case-insensitive)
-    const user = await this.userRepository
-      .createQueryBuilder('user')
-      .where('LOWER(user.email) = LOWER(:email)', { email: dto.email })
-      .select(['user.id', 'user.email', 'user.username', 'user.password', 'user.status'])
-      .getOne();
+    // Tìm user bằng email (case-insensitive - MySQL không hỗ trợ mode insensitive, dùng raw query hoặc tìm tất cả rồi filter)
+    const users = await this.prisma.user.findMany({
+      where: {
+        deleted_at: null,
+      },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        password: true,
+        status: true,
+      },
+    });
+    const user = users.find(u => u.email?.toLowerCase() === dto.email.toLowerCase());
 
     let authError: string | null = null;
 
@@ -59,7 +63,7 @@ export class AuthService {
       if (!isPasswordValid) {
         await this.accountLockoutService.add(scope, identifier);
         authError = 'Email hoặc mật khẩu không đúng.';
-      } else if (user.status !== UserStatus.Active) {
+      } else if (user.status !== UserStatus.active) {
         authError = 'Tài khoản đã bị khóa hoặc không hoạt động.';
       }
     }
@@ -70,60 +74,65 @@ export class AuthService {
 
     await this.accountLockoutService.reset(scope, identifier);
 
-    this.userRepository
-      .update({ id: user!.id }, { last_login_at: new Date() })
-      .catch(() => undefined);
+    await this.prisma.user.update({
+      where: { id: user!.id },
+      data: { last_login_at: new Date() },
+    }).catch(() => undefined);
 
-    const { accessToken, refreshToken, refreshJti, accessTtlSec } = this.tokenService.generateTokens(user!.id, user!.email!);
+    const { accessToken, refreshToken, refreshJti, accessTtlSec } = this.tokenService.generateTokens(Number(user!.id), user!.email!);
 
-    await this.redis.set(this.buildRefreshKey(user!.id, refreshJti), '1', this.tokenService.getRefreshTtlSec()).catch(() => undefined);
+    await this.redis.set(this.buildRefreshKey(Number(user!.id), refreshJti), '1', this.tokenService.getRefreshTtlSec()).catch(() => undefined);
 
     return { token: accessToken, refreshToken: refreshToken, expiresIn: accessTtlSec };
   }
 
   async register(dto: RegisterDto) {
-    const existingByEmail = await this.userRepository.findOne({ where: { email: dto.email } });
+    const existingByEmail = await this.prisma.user.findFirst({
+      where: { email: dto.email, deleted_at: null },
+    });
     if (existingByEmail) {
       throw new Error('Email đã được sử dụng.');
     }
 
     if (dto.username) {
-      const existingByUsername = await this.userRepository.findOne({ where: { username: dto.username } });
+      const existingByUsername = await this.prisma.user.findFirst({
+        where: { username: dto.username, deleted_at: null },
+      });
       if (existingByUsername) {
         throw new Error('Tên đăng nhập đã được sử dụng.');
       }
     }
 
     if (dto.phone) {
-      const existingByPhone = await this.userRepository.findOne({ where: { phone: dto.phone } });
+      const existingByPhone = await this.prisma.user.findFirst({
+        where: { phone: dto.phone, deleted_at: null },
+      });
       if (existingByPhone) {
         throw new Error('Số điện thoại đã được sử dụng.');
       }
     }
 
     const hashed = await bcrypt.hash(dto.password, 10);
-    const user = this.userRepository.create({
-      username: dto.username ?? dto.email,
-      email: dto.email,
-      phone: dto.phone ?? null,
-      password: hashed,
-      status: UserStatus.Active,
+    const saved = await this.prisma.user.create({
+      data: {
+        username: dto.username ?? dto.email,
+        email: dto.email,
+        phone: dto.phone ?? null,
+        password: hashed,
+        status: UserStatus.active,
+        profile: {
+          create: {
+            name: dto.username || dto.email,
+          },
+        },
+      },
     });
-    const saved = await this.userRepository.save(user);
-
-    if (saved && saved.id) {
-      const profile = this.profileRepository.create({
-        userId: saved.id,
-        name: saved.username || saved.email,
-      });
-      await this.profileRepository.save(profile).catch(() => undefined);
-    }
 
     return { user: safeUser(saved) };
   }
 
   async logout(userId: number, token?: string) {
-    const user = await this.userRepository.findOne({ where: { id: userId } });
+    const user = await this.prisma.user.findUnique({ where: { id: BigInt(userId) } });
     if (!user) {
       throw new Error('Người dùng không tồn tại');
     }
@@ -179,26 +188,29 @@ export class AuthService {
   }
 
   async me(userId: number) {
-    const user = await this.userRepository.findOne({ where: { id: userId } });
+    const user = await this.prisma.user.findUnique({ where: { id: BigInt(userId) } });
     if (!user) throw new Error('Không thể lấy thông tin user');
-    return safeUser(user);
+    return safeUser({ 
+      ...user, 
+      id: Number(user.id), 
+      status: user.status as any,
+      created_user_id: user.created_user_id ? Number(user.created_user_id) : null,
+      updated_user_id: user.updated_user_id ? Number(user.updated_user_id) : null,
+    });
   }
 
   async forgotPassword(dto: ForgotPasswordDto) {
-    const user = await this.userRepository.findOne({
-      where: { email: dto.email },
+    const user = await this.prisma.user.findFirst({
+      where: { email: dto.email, deleted_at: null },
       select: { id: true, email: true },
     });
 
     if (user && user.email) {
       const token = crypto.randomBytes(32).toString('hex');
       const key = `password_reset:${token}`;
-      const data = JSON.stringify({ userId: user.id, email: user.email });
+      const data = JSON.stringify({ userId: Number(user.id), email: user.email });
 
       await this.redis.set(key, data, 3600); // 1 hour TTL
-
-      // Log token in development
-      // Removed console.log for production
     }
 
     return null;
@@ -229,10 +241,10 @@ export class AuthService {
       }
     }
 
-    let user: Pick<User, 'id' | 'email'> | null = null;
+    let user: { id: bigint; email: string | null } | null = null;
     if (!resetError && userIdForReset) {
-      user = await this.userRepository.findOne({
-        where: { id: userIdForReset },
+      user = await this.prisma.user.findUnique({
+        where: { id: BigInt(userIdForReset) },
         select: { id: true, email: true },
       });
       if (!user) resetError = 'Người dùng không tồn tại.';
@@ -243,7 +255,7 @@ export class AuthService {
     }
 
     const hashedPassword = await bcrypt.hash(dto.password, 10);
-    await this.userRepository.update({ id: user!.id }, { password: hashedPassword });
+    await this.prisma.user.update({ where: { id: user!.id }, data: { password: hashedPassword } });
     await this.redis.del(key);
     await this.accountLockoutService.reset('auth:login', user!.email!.toLowerCase());
 

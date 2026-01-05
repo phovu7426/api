@@ -42,10 +42,10 @@ export class NotificationController {
   @Permission('notification.manage')
   async getUnreadCount(@Request() req: { user: AuthUser }) {
     const result = await this.notificationService.getList(
-      { user_id: req.user.id, is_read: false, status: BasicStatus.Active },
+      { user_id: req.user.id, is_read: false, status: BasicStatus.active },
       { page: 1, limit: 1 }
     );
-    return { success: true, data: { count: result.meta?.totalItems || 0 }, message: 'Unread count retrieved successfully' };
+    return { success: true, data: { count: result.meta?.total || 0 }, message: 'Unread count retrieved successfully' };
   }
 
   @Get(':id')

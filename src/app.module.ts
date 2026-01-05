@@ -35,7 +35,6 @@ import { BannerModule } from '@/modules/banner/banner.module';
 import { ContactModule } from '@/modules/contact/contact.module';
 import { SystemConfigModule } from '@/modules/system-config/system-config.module';
 import { AppMailModule } from '@/core/mail/mail.module';
-import { ComicsModule } from '@/modules/comics/comics.module';
 
 @Module({
   imports: [
@@ -56,7 +55,6 @@ import { ComicsModule } from '@/modules/comics/comics.module';
     ContactModule,
     SystemConfigModule,
     AppMailModule,
-    ComicsModule,
   ],
   controllers: [],
   providers: [

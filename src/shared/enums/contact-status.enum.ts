@@ -1,14 +1,13 @@
-export enum ContactStatus {
-  Pending = 'pending',
-  Read = 'read',
-  Replied = 'replied',
-  Closed = 'closed',
-}
+import { ContactStatus as PrismaContactStatus } from '@prisma/client';
 
-export const ContactStatusLabels: Record<ContactStatus, string> = {
-  [ContactStatus.Pending]: 'Chờ xử lý',
-  [ContactStatus.Read]: 'Đã đọc',
-  [ContactStatus.Replied]: 'Đã trả lời',
-  [ContactStatus.Closed]: 'Đã đóng',
+// Re-export Prisma enum
+export { ContactStatus } from '@prisma/client';
+
+// Labels for UI display
+export const ContactStatusLabels: Record<PrismaContactStatus, string> = {
+  pending: 'Chờ xử lý',
+  read: 'Đã đọc',
+  replied: 'Đã trả lời',
+  closed: 'Đã đóng',
 };
 

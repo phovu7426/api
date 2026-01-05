@@ -1,36 +1,31 @@
-import { DataSource, Repository } from 'typeorm';
 import { Injectable, Logger } from '@nestjs/common';
-import { Role } from '@/shared/entities/role.entity';
-import { Permission } from '@/shared/entities/permission.entity';
-import { User } from '@/shared/entities/user.entity';
-import { Context } from '@/shared/entities/context.entity';
-import { RoleContext } from '@/shared/entities/role-context.entity';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
 
 @Injectable()
 export class SeedRoles {
   private readonly logger = new Logger(SeedRoles.name);
 
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async seed(): Promise<void> {
     this.logger.log('Seeding roles...');
 
-    const roleRepo = this.dataSource.getRepository(Role);
-    const permRepo = this.dataSource.getRepository(Permission);
-    const userRepo = this.dataSource.getRepository(User);
-
     // Không skip nếu roles đã tồn tại - luôn update permissions để đảm bảo đồng bộ
     // Check if roles already exist để log
-    const existingRoles = await roleRepo.count();
+    const existingRoles = await this.prisma.role.count({
+      where: { deleted_at: null },
+    });
     if (existingRoles > 0) {
       this.logger.log('Roles already exist, will update permissions...');
     }
 
     // Get admin user for audit fields
-    const adminUser = await userRepo.findOne({ where: { username: 'admin' } as any });
-    const defaultUserId = adminUser?.id ?? 1;
+    const adminUser = await this.prisma.user.findFirst({
+      where: { username: 'admin', deleted_at: null },
+    });
+    const defaultUserId = adminUser ? Number(adminUser.id) : 1;
 
-    // Seed roles - Theo yêu cầu: System có 2 roles, Shop/Comic mỗi context có 2 roles
+    // Seed roles - Theo yêu cầu: System có 2 roles, Shop mỗi context có 2 roles
     const rolesData = [
       // ========== SYSTEM CONTEXT ROLES ==========
       {
@@ -59,49 +54,43 @@ export class SeedRoles {
         status: 'active',
         parent_id: null,
       },
-      
-      // ========== COMIC CONTEXT ROLES ==========
-      {
-        code: 'comic_admin',
-        name: 'Quản trị viên Comic',
-        status: 'active',
-        parent_id: null,
-      },
-      {
-        code: 'comic_manager',
-        name: 'Quản lý Comic',
-        status: 'active',
-        parent_id: null,
-      },
     ];
 
-    const createdRoles: Map<string, Role> = new Map();
+    const createdRoles: Map<string, any> = new Map();
 
     // Create or update roles
     for (const roleData of rolesData) {
-      let role = await roleRepo.findOne({ where: { code: roleData.code } as any });
+      let role = await this.prisma.role.findFirst({
+        where: { code: roleData.code, deleted_at: null },
+      });
+      
       if (!role) {
         // Tạo mới nếu chưa có
-        role = roleRepo.create({
-          ...roleData,
-          created_user_id: defaultUserId,
-          updated_user_id: defaultUserId,
+        role = await this.prisma.role.create({
+          data: {
+            ...roleData,
+            created_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+            updated_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+          },
         });
-        role = await roleRepo.save(role);
         this.logger.log(`Created role: ${role.code}`);
       } else {
         // Update nếu đã có (chỉ update name và status)
-        role.name = roleData.name;
-        role.status = roleData.status;
-        role.updated_user_id = defaultUserId;
-        role = await roleRepo.save(role);
+        role = await this.prisma.role.update({
+          where: { id: role.id },
+          data: {
+            name: roleData.name,
+            status: roleData.status,
+            updated_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+          },
+        });
         this.logger.log(`Updated existing role: ${role.code}`);
       }
       createdRoles.set(role.code, role);
     }
 
     // Assign permissions to roles
-    await this.assignPermissionsToRoles(roleRepo, permRepo, createdRoles);
+    await this.assignPermissionsToRoles(createdRoles);
 
     // Assign roles to contexts (role_contexts)
     await this.assignRolesToContexts(createdRoles);
@@ -109,14 +98,11 @@ export class SeedRoles {
     this.logger.log('Roles seeding completed');
   }
 
-  private async assignPermissionsToRoles(
-    roleRepo: Repository<Role>,
-    permRepo: Repository<Permission>,
-    createdRoles: Map<string, Role>
-  ): Promise<void> {
+  private async assignPermissionsToRoles(createdRoles: Map<string, any>): Promise<void> {
     // Lấy toàn bộ permissions active - không phân chia theo scope
-    // Mỗi permission là 1 chức năng, việc ai được dùng phụ thuộc vào role và group id
-    const allPermissions = await permRepo.find({ where: { status: 'active' } as any });
+    const allPermissions = await this.prisma.permission.findMany({
+      where: { status: 'active', deleted_at: null },
+    });
     
     this.logger.log(`Total permissions: ${allPermissions.length}`);
 
@@ -125,22 +111,34 @@ export class SeedRoles {
     // ===== System role: Full tất cả quyền =====
     const systemRole = createdRoles.get('system');
     if (systemRole) {
-      systemRole.permissions = allPermissions;
-      const saved = await roleRepo.save(systemRole);
-      this.logger.log(`✅ Assigned ${saved.permissions?.length ?? 0} permissions to system role (full access)`);
+      await this.prisma.role.update({
+        where: { id: systemRole.id },
+        data: {
+          permissions: {
+            set: allPermissions.map(p => ({ id: p.id })),
+          },
+        },
+      });
+      this.logger.log(`✅ Assigned ${allPermissions.length} permissions to system role (full access)`);
     }
 
     // ===== System Manager: Full quyền trừ vai trò, quyền, phân quyền =====
     const systemManagerRole = createdRoles.get('system_manager');
     if (systemManagerRole) {
       const excludedPerms = [
-        'role.manage',           // Quản lý Vai trò
-        'permission.manage',     // Quản lý Quyền
+        'role.manage',
+        'permission.manage',
       ];
       const systemManagerPerms = allPermissions.filter(p => !excludedPerms.includes(p.code));
-      systemManagerRole.permissions = systemManagerPerms;
-      const saved = await roleRepo.save(systemManagerRole);
-      this.logger.log(`✅ Assigned ${saved.permissions?.length ?? 0} permissions to system_manager role (full trừ vai trò, quyền, phân quyền)`);
+      await this.prisma.role.update({
+        where: { id: systemManagerRole.id },
+        data: {
+          permissions: {
+            set: systemManagerPerms.map(p => ({ id: p.id })),
+          },
+        },
+      });
+      this.logger.log(`✅ Assigned ${systemManagerPerms.length} permissions to system_manager role (full trừ vai trò, quyền, phân quyền)`);
     }
 
     // ========== SHOP CONTEXT ROLES ==========
@@ -149,60 +147,41 @@ export class SeedRoles {
     const shopAdminRole = createdRoles.get('shop_admin');
     if (shopAdminRole) {
       const excludedPerms = [
-        'role.manage',                    // Quản lý Vai trò
-        'permission.manage',              // Quản lý Quyền
-        'system.manage',                   // Quản lý Hệ thống
+        'role.manage',
+        'permission.manage',
+        'system.manage',
       ];
       const shopAdminPerms = allPermissions.filter(p => !excludedPerms.includes(p.code));
-      shopAdminRole.permissions = shopAdminPerms;
-      const saved = await roleRepo.save(shopAdminRole);
-      this.logger.log(`✅ Assigned ${saved.permissions?.length ?? 0} permissions to shop_admin role (full trừ vai trò, quyền, phân quyền, hệ thống)`);
+      await this.prisma.role.update({
+        where: { id: shopAdminRole.id },
+        data: {
+          permissions: {
+            set: shopAdminPerms.map(p => ({ id: p.id })),
+          },
+        },
+      });
+      this.logger.log(`✅ Assigned ${shopAdminPerms.length} permissions to shop_admin role (full trừ vai trò, quyền, phân quyền, hệ thống)`);
     }
 
     // ===== Shop Manager: Giống shop_admin nhưng bỏ quản lý tài khoản =====
     const shopManagerRole = createdRoles.get('shop_manager');
     if (shopManagerRole) {
       const excludedPerms = [
-        'role.manage',                    // Quản lý Vai trò
-        'permission.manage',              // Quản lý Quyền
-        'system.manage',                   // Quản lý Hệ thống
-        'user.manage',                     // Quản lý Người dùng (quản lý tài khoản)
+        'role.manage',
+        'permission.manage',
+        'system.manage',
+        'user.manage',
       ];
       const shopManagerPerms = allPermissions.filter(p => !excludedPerms.includes(p.code));
-      shopManagerRole.permissions = shopManagerPerms;
-      const saved = await roleRepo.save(shopManagerRole);
-      this.logger.log(`✅ Assigned ${saved.permissions?.length ?? 0} permissions to shop_manager role (giống shop_admin trừ user.manage)`);
-    }
-
-    // ========== COMIC CONTEXT ROLES ==========
-    
-    // ===== Comic Admin: Full quyền trừ vai trò, quyền, phân quyền, quản lý hệ thống =====
-    const comicAdminRole = createdRoles.get('comic_admin');
-    if (comicAdminRole) {
-      const excludedPerms = [
-        'role.manage',                    // Quản lý Vai trò
-        'permission.manage',              // Quản lý Quyền
-        'system.manage',                   // Quản lý Hệ thống
-      ];
-      const comicAdminPerms = allPermissions.filter(p => !excludedPerms.includes(p.code));
-      comicAdminRole.permissions = comicAdminPerms;
-      const saved = await roleRepo.save(comicAdminRole);
-      this.logger.log(`✅ Assigned ${saved.permissions?.length ?? 0} permissions to comic_admin role (full trừ vai trò, quyền, phân quyền, hệ thống)`);
-    }
-
-    // ===== Comic Manager: Giống comic_admin nhưng bỏ quản lý tài khoản =====
-    const comicManagerRole = createdRoles.get('comic_manager');
-    if (comicManagerRole) {
-      const excludedPerms = [
-        'role.manage',                    // Quản lý Vai trò
-        'permission.manage',              // Quản lý Quyền
-        'system.manage',                   // Quản lý Hệ thống
-        'user.manage',                     // Quản lý Người dùng (quản lý tài khoản)
-      ];
-      const comicManagerPerms = allPermissions.filter(p => !excludedPerms.includes(p.code));
-      comicManagerRole.permissions = comicManagerPerms;
-      const saved = await roleRepo.save(comicManagerRole);
-      this.logger.log(`✅ Assigned ${saved.permissions?.length ?? 0} permissions to comic_manager role (giống comic_admin trừ user.manage)`);
+      await this.prisma.role.update({
+        where: { id: shopManagerRole.id },
+        data: {
+          permissions: {
+            set: shopManagerPerms.map(p => ({ id: p.id })),
+          },
+        },
+      });
+      this.logger.log(`✅ Assigned ${shopManagerPerms.length} permissions to shop_manager role (giống shop_admin trừ user.manage)`);
     }
   }
 
@@ -210,23 +189,22 @@ export class SeedRoles {
    * Gán roles vào contexts (role_contexts junction table)
    * - System roles: gán vào system context
    * - Shop roles: gán vào shop context
-   * - Comic roles: gán vào comic context
    */
-  private async assignRolesToContexts(createdRoles: Map<string, Role>): Promise<void> {
-    const contextRepo = this.dataSource.getRepository(Context);
-    const roleContextRepo = this.dataSource.getRepository(RoleContext);
-
+  private async assignRolesToContexts(createdRoles: Map<string, any>): Promise<void> {
     // Get contexts
-    const systemContext = await contextRepo.findOne({ where: { code: 'system' } });
-    const shopContext = await contextRepo.findOne({ where: { code: 'shop' } });
-    const comicContext = await contextRepo.findOne({ where: { code: 'comic' } });
+    const systemContext = await this.prisma.context.findFirst({
+      where: { code: 'system', deleted_at: null },
+    });
+    const shopContext = await this.prisma.context.findFirst({
+      where: { code: 'shop', deleted_at: null },
+    });
 
     if (!systemContext) {
       this.logger.warn('System context not found. Skipping role_contexts assignment.');
       return;
     }
 
-    const roleContextsToCreate: Array<{ role_id: number; context_id: number; roleName: string }> = [];
+    const roleContextsToCreate: Array<{ role_id: bigint; context_id: bigint; roleName: string }> = [];
 
     // ========== SYSTEM CONTEXT ROLES ==========
     const systemRole = createdRoles.get('system');
@@ -268,42 +246,24 @@ export class SeedRoles {
       }
     }
 
-    // ========== COMIC CONTEXT ROLES ==========
-    if (comicContext) {
-      const comicAdminRole = createdRoles.get('comic_admin');
-      if (comicAdminRole) {
-        roleContextsToCreate.push({
-          role_id: comicAdminRole.id,
-          context_id: comicContext.id,
-          roleName: 'comic_admin',
-        });
-      }
-
-      const comicManagerRole = createdRoles.get('comic_manager');
-      if (comicManagerRole) {
-        roleContextsToCreate.push({
-          role_id: comicManagerRole.id,
-          context_id: comicContext.id,
-          roleName: 'comic_manager',
-        });
-      }
-    }
-
     // Tạo tất cả role_contexts (xóa cũ trước nếu có)
     for (const rcData of roleContextsToCreate) {
       // Xóa cũ nếu có
-      await roleContextRepo.delete({
-        role_id: rcData.role_id,
-        context_id: rcData.context_id,
+      await this.prisma.roleContext.deleteMany({
+        where: {
+          role_id: rcData.role_id,
+          context_id: rcData.context_id,
+        },
       });
       
       // Tạo mới
-      const roleContext = roleContextRepo.create({
-        role_id: rcData.role_id,
-        context_id: rcData.context_id,
+      await this.prisma.roleContext.create({
+        data: {
+          role_id: rcData.role_id,
+          context_id: rcData.context_id,
+        },
       });
-      await roleContextRepo.save(roleContext);
-      this.logger.log(`✅ Assigned ${rcData.roleName} role to context (id=${rcData.context_id})`);
+      this.logger.log(`✅ Assigned ${rcData.roleName} role to context (id=${Number(rcData.context_id)})`);
     }
 
     this.logger.log('✅ Role contexts assignment completed');
@@ -311,8 +271,7 @@ export class SeedRoles {
 
   async clear(): Promise<void> {
     this.logger.log('Clearing roles...');
-    const roleRepo = this.dataSource.getRepository(Role);
-    await roleRepo.clear();
+    await this.prisma.role.deleteMany({});
     this.logger.log('Roles cleared');
   }
 }

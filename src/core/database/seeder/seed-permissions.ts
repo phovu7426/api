@@ -1,41 +1,35 @@
-import { DataSource } from 'typeorm';
 import { Injectable, Logger } from '@nestjs/common';
-import { Permission } from '@/shared/entities/permission.entity';
-import { User } from '@/shared/entities/user.entity';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
 
 @Injectable()
 export class SeedPermissions {
   private readonly logger = new Logger(SeedPermissions.name);
 
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async seed(): Promise<void> {
     this.logger.log('Seeding permissions...');
 
-    const permRepo = this.dataSource.getRepository(Permission);
-    const userRepo = this.dataSource.getRepository(User);
-
     // Check if permissions already exist
-    const existingPermissions = await permRepo.count();
+    const existingPermissions = await this.prisma.permission.count({
+      where: { deleted_at: null },
+    });
     if (existingPermissions > 0) {
       this.logger.log('Permissions already seeded, skipping...');
       return;
     }
 
     // Get admin user for audit fields
-    const adminUser = await userRepo.findOne({ where: { username: 'admin' } as any });
-    const defaultUserId = adminUser?.id ?? 1;
+    const adminUser = await this.prisma.user.findFirst({
+      where: { username: 'admin', deleted_at: null },
+    });
+    const defaultUserId = adminUser ? Number(adminUser.id) : 1;
 
     // Seed permissions - Chỉ có quyền manage level, không chia nhỏ thành read, create, update, delete
     // 1 menu = 1 quyền manage cho tất cả
     const permissions = [
       // ========== DASHBOARD MODULE ==========
       { code: 'dashboard.manage', name: 'Quản lý Dashboard', status: 'active', parent_code: null },
-      
-      // ========== COMIC MODULE ==========
-      { code: 'comic.manage', name: 'Quản lý Truyện tranh', status: 'active', parent_code: null },
-      { code: 'comic_category.manage', name: 'Quản lý Danh mục truyện tranh', status: 'active', parent_code: null },
-      { code: 'chapter.manage', name: 'Quản lý Chương', status: 'active', parent_code: null },
       
       // ========== POST MODULE (Blog/Tin tức) ==========
       { code: 'post.manage', name: 'Quản lý Bài viết', status: 'active', parent_code: null },
@@ -74,16 +68,18 @@ export class SeedPermissions {
       { code: 'group.manage', name: 'Quản lý Nhóm', status: 'active', parent_code: null },
     ];
 
-    const createdPermissions: Map<string, Permission> = new Map();
+    const createdPermissions: Map<string, any> = new Map();
 
     // Create permissions in order (parents first)
     const sortedPermissions = this.sortPermissionsByParent(permissions);
     
     for (const permData of sortedPermissions) {
-      let parentPermission: Permission | null = null;
+      let parentId: bigint | null = null;
       if (permData.parent_code) {
-        parentPermission = createdPermissions.get(permData.parent_code) || null;
-        if (!parentPermission) {
+        const parentPermission = createdPermissions.get(permData.parent_code);
+        if (parentPermission) {
+          parentId = parentPermission.id;
+        } else {
           this.logger.warn(`Parent permission not found for ${permData.code}, skipping parent relation`);
         }
       }
@@ -91,18 +87,19 @@ export class SeedPermissions {
       // Tự động set scope: nếu code bắt đầu bằng 'system.' thì scope = 'system', ngược lại = 'context'
       const scope = permData.code.startsWith('system.') ? 'system' : 'context';
 
-      const permission = permRepo.create({
-        code: permData.code,
-        name: permData.name,
-        status: permData.status,
-        scope: scope,
-        parent: parentPermission,
-        created_user_id: defaultUserId,
-        updated_user_id: defaultUserId,
+      const permission = await this.prisma.permission.create({
+        data: {
+          code: permData.code,
+          name: permData.name,
+          status: permData.status,
+          scope: scope,
+          parent_id: parentId,
+          created_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+          updated_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+        },
       });
-      const saved = await permRepo.save(permission);
-      createdPermissions.set(saved.code, saved);
-      this.logger.log(`Created permission: ${saved.code}${parentPermission ? ` (parent: ${parentPermission.code})` : ''}`);
+      createdPermissions.set(permission.code, permission);
+      this.logger.log(`Created permission: ${permission.code}${parentId ? ` (parent: ${permData.parent_code})` : ''}`);
     }
 
     this.logger.log(`Permissions seeding completed - Total: ${createdPermissions.size}`);
@@ -140,8 +137,7 @@ export class SeedPermissions {
 
   async clear(): Promise<void> {
     this.logger.log('Clearing permissions...');
-    const permRepo = this.dataSource.getRepository(Permission);
-    await permRepo.clear();
+    await this.prisma.permission.deleteMany({});
     this.logger.log('Permissions cleared');
   }
 }

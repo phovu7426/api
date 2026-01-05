@@ -21,8 +21,8 @@ export class UserController {
   @Permission('user.manage')
   @Get('simple')
   getSimpleList(@Query() query: any) {
-    const { filters, options } = prepareQuery(query);
-    return this.service.getSimpleList(filters, options);
+    const { filters } = prepareQuery(query);
+    return this.service.getSimpleList(filters);
   }
 
   @Permission('user.manage')

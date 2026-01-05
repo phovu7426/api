@@ -1,88 +1,139 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThanOrEqual, MoreThanOrEqual, IsNull, Or } from 'typeorm';
-import { Banner } from '@/shared/entities/banner.entity';
-import { BannerLocation } from '@/shared/entities/banner-location.entity';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
 import { BasicStatus } from '@/shared/enums/basic-status.enum';
-import { ListService } from '@/common/base/services/list.service';
-import { Filters, Options } from '@/common/base/interfaces/list.interface';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
-export class PublicBannerService extends ListService<Banner> {
+export class PublicBannerService {
     constructor(
-        @InjectRepository(Banner)
-        protected readonly bannerRepository: Repository<Banner>,
-        @InjectRepository(BannerLocation)
-        private readonly bannerLocationRepository: Repository<BannerLocation>,
-    ) {
-        super(bannerRepository);
-    }
+        private readonly prisma: PrismaService,
+    ) {}
 
     /**
-     * Override prepareFilters để thêm filter active banners + date range
-     * Lọc: status = active, start_date <= now, end_date >= now (hoặc null)
+     * Get list of active banners with date range filter
      */
-    protected prepareFilters(filters?: Filters<Banner>, options?: Options): any {
+    async getList(filters?: any, options?: any) {
         const now = new Date();
+        const where: Prisma.BannerWhereInput = {
+            status: BasicStatus.active,
+            ...(filters?.location_id && { location_id: BigInt(filters.location_id) }),
+            // Date range filter: start_date <= now (or null), end_date >= now (or null)
+            AND: [
+                {
+                    OR: [
+                        { start_date: null },
+                        { start_date: { lte: now } },
+                    ],
+                },
+                {
+                    OR: [
+                        { end_date: null },
+                        { end_date: { gte: now } },
+                    ],
+                },
+            ],
+            deleted_at: null,
+        };
+
+        const orderBy: Prisma.BannerOrderByWithRelationInput[] = options?.sort 
+            ? this.parseSort(options.sort)
+            : [{ sort_order: 'asc' }, { created_at: 'desc' }];
+
+        const page = options?.page || 1;
+        const limit = options?.limit || 10;
+        const skip = (page - 1) * limit;
+
+        const [data, total] = await Promise.all([
+            this.prisma.banner.findMany({
+                where,
+                orderBy,
+                skip,
+                take: limit,
+                include: {
+                    location: true,
+                },
+            }),
+            this.prisma.banner.count({ where }),
+        ]);
+
         return {
-            ...filters,
-            status: BasicStatus.Active,
-            start_date: Or(IsNull(), LessThanOrEqual(now)),
-            end_date: Or(IsNull(), MoreThanOrEqual(now)),
+            data,
+            meta: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit),
+            },
         };
     }
 
     /**
-     * Override prepareOptions để set default sort
+     * Get one banner
      */
-    protected prepareOptions(queryOptions: any = {}): any {
-        const options = super.prepareOptions(queryOptions);
-        
-        if (!options.sort) {
-            options.sort = ['sort_order:ASC', 'created_at:DESC'];
-        }
-
-        return options;
-    }
-
-    async findByLocationCode(locationCode: string): Promise<Banner[]> {
-        const location = await this.bannerLocationRepository.findOne({
+    async getOne(where: Prisma.BannerWhereInput, options?: any) {
+        const now = new Date();
+        return this.prisma.banner.findFirst({
             where: {
-                code: locationCode,
-                status: BasicStatus.Active
+                ...where,
+                status: BasicStatus.active,
+                deleted_at: null,
+                // Date range filter
+                AND: [
+                    {
+                        OR: [
+                            { start_date: null },
+                            { start_date: { lte: now } },
+                        ],
+                    },
+                    {
+                        OR: [
+                            { end_date: null },
+                            { end_date: { gte: now } },
+                        ],
+                    },
+                ],
+            },
+            include: {
+                location: true,
             },
         });
+    }
 
-        if (!location) {
+    /**
+     * Find by location code
+     */
+    async findByLocationCode(locationCode: string): Promise<any[]> {
+        const location = await this.prisma.bannerLocation.findUnique({
+            where: { code: locationCode },
+        });
+
+        if (!location || location.status !== BasicStatus.active) {
             throw new NotFoundException(`Vị trí banner với mã "${locationCode}" không tồn tại hoặc không hoạt động`);
         }
 
-        // Tận dụng getList với filters
         const result = await this.getList(
-            { location_id: location.id } as any,
+            { location_id: Number(location.id) },
             { limit: 1000, page: 1 }
         );
 
         return result.data;
     }
 
-    async findActiveBanners(locationCode?: string): Promise<{
-        [locationCode: string]: Banner[];
-    }> {
-        const qb = this.bannerLocationRepository.createQueryBuilder('location');
-        qb.where('location.status = :status', { status: BasicStatus.Active });
-        
-        if (locationCode) {
-            qb.andWhere('location.code = :code', { code: locationCode });
-        }
+    /**
+     * Find active banners by location code(s)
+     */
+    async findActiveBanners(locationCode?: string): Promise<{ [locationCode: string]: any[] }> {
+        const where: Prisma.BannerLocationWhereInput = {
+            status: BasicStatus.active,
+            ...(locationCode && { code: locationCode }),
+        };
 
-        const locations = await qb.getMany();
-        const result: { [locationCode: string]: Banner[] } = {};
+        const locations = await this.prisma.bannerLocation.findMany({ where });
+        const result: { [locationCode: string]: any[] } = {};
 
-        // Tận dụng getList cho mỗi location
         for (const location of locations) {
             const bannerResult = await this.getList(
-                { location_id: location.id } as any,
+                { location_id: Number(location.id) },
                 { limit: 1000, page: 1 }
             );
 
@@ -94,17 +145,27 @@ export class PublicBannerService extends ListService<Banner> {
         return result;
     }
 
-    async findBannerById(id: number): Promise<Banner> {
-        // Tận dụng getOne với relations và filters
-        const banner = await this.getOne(
-            { id, status: BasicStatus.Active } as any,
-            { relations: ['location'] }
-        );
+    /**
+     * Find banner by ID
+     */
+    async findBannerById(id: number): Promise<any> {
+        const banner = await this.getOne({ id: BigInt(id) });
 
         if (!banner) {
             throw new NotFoundException(`Banner với ID ${id} không tồn tại hoặc không hoạt động`);
         }
 
         return banner;
+    }
+
+    /**
+     * Parse sort string to Prisma orderBy
+     */
+    private parseSort(sort: string | string[]): Prisma.BannerOrderByWithRelationInput[] {
+        const sorts = Array.isArray(sort) ? sort : [sort];
+        return sorts.map(s => {
+            const [field, direction] = s.split(':');
+            return { [field]: direction?.toLowerCase() === 'desc' ? 'desc' : 'asc' } as Prisma.BannerOrderByWithRelationInput;
+        });
     }
 }

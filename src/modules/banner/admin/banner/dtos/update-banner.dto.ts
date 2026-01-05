@@ -1,7 +1,7 @@
 import { IsString, IsOptional, IsUrl, MaxLength, IsInt, Min, IsEnum } from 'class-validator';
 import { Type } from 'class-transformer';
 import { BasicStatus } from '@/shared/enums/basic-status.enum';
-import { BannerLinkTarget } from '@/shared/entities/banner.entity';
+import { BannerLinkTarget } from '@/shared/enums';
 
 export class UpdateBannerDto {
     @IsString()

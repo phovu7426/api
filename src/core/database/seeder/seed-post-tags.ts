@@ -1,31 +1,30 @@
-import { DataSource } from 'typeorm';
 import { Injectable, Logger } from '@nestjs/common';
-import { PostTag } from '@/shared/entities/post-tag.entity';
-import { User } from '@/shared/entities/user.entity';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
 import { BasicStatus } from '@/shared/enums/basic-status.enum';
 
 @Injectable()
 export class SeedPostTags {
   private readonly logger = new Logger(SeedPostTags.name);
 
-  constructor(private readonly dataSource: DataSource) { }
+  constructor(private readonly prisma: PrismaService) { }
 
   async seed(): Promise<void> {
     this.logger.log('Seeding post tags...');
 
-    const tagRepo = this.dataSource.getRepository(PostTag);
-    const userRepo = this.dataSource.getRepository(User);
-
     // Check if tags already exist
-    const existingTags = await tagRepo.count();
+    const existingTags = await this.prisma.postTag.count({
+      where: { deleted_at: null },
+    });
     if (existingTags > 0) {
       this.logger.log('Post tags already seeded, skipping...');
       return;
     }
 
     // Get admin user for audit fields
-    const adminUser = await userRepo.findOne({ where: { username: 'admin' } as any });
-    const defaultUserId = adminUser?.id ?? 1;
+    const adminUser = await this.prisma.user.findFirst({
+      where: { username: 'admin', deleted_at: null },
+    });
+    const defaultUserId = adminUser ? Number(adminUser.id) : 1;
 
     // Seed 30 tags
     const tagsData = [
@@ -62,16 +61,17 @@ export class SeedPostTags {
     ];
 
     for (const tagData of tagsData) {
-      const tag = tagRepo.create({
-        name: tagData.name,
-        slug: tagData.slug,
-        description: tagData.description,
-        status: tagData.status === 'active' ? BasicStatus.Active : BasicStatus.Inactive,
-        created_user_id: defaultUserId,
-        updated_user_id: defaultUserId,
+      await this.prisma.postTag.create({
+        data: {
+          name: tagData.name,
+          slug: tagData.slug,
+          description: tagData.description,
+          status: tagData.status === 'active' ? BasicStatus.active : BasicStatus.inactive,
+          created_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+          updated_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+        },
       });
-      await tagRepo.save(tag);
-      this.logger.log(`Created tag: ${tag.name}`);
+      this.logger.log(`Created tag: ${tagData.name}`);
     }
 
     this.logger.log(`Post tags seeding completed - Total: ${tagsData.length}`);
@@ -79,8 +79,7 @@ export class SeedPostTags {
 
   async clear(): Promise<void> {
     this.logger.log('Clearing post tags...');
-    const tagRepo = this.dataSource.getRepository(PostTag);
-    await tagRepo.clear();
+    await this.prisma.postTag.deleteMany({});
     this.logger.log('Post tags cleared');
   }
 }

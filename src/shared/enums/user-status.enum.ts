@@ -1,13 +1,13 @@
-export enum UserStatus {
-  Active = 'active',
-  Pending = 'pending',
-  Inactive = 'inactive',
-}
+import { UserStatus as PrismaUserStatus } from '@prisma/client';
 
-export const UserStatusLabels: Record<UserStatus, string> = {
-  [UserStatus.Active]: 'Hoạt động',
-  [UserStatus.Pending]: 'Chờ xác nhận',
-  [UserStatus.Inactive]: 'Đã khóa',
+// Re-export Prisma enum
+export { UserStatus } from '@prisma/client';
+
+// Labels for UI display
+export const UserStatusLabels: Record<PrismaUserStatus, string> = {
+  active: 'Hoạt động',
+  pending: 'Chờ xác nhận',
+  inactive: 'Đã khóa',
 };
 
 

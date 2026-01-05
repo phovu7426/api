@@ -1,36 +1,361 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In, DeepPartial } from 'typeorm';
-import { Post } from '@/shared/entities/post.entity';
-import { PostCategory } from '@/shared/entities/post-category.entity';
-import { PostTag } from '@/shared/entities/post-tag.entity';
-import { CrudService } from '@/common/base/services/crud.service';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 import { RequestContext } from '@/common/utils/request-context.util';
 import { verifyGroupOwnership } from '@/common/utils/group-ownership.util';
+import { StringUtil } from '@/core/utils/string.util';
 
 @Injectable()
-export class PostService extends CrudService<Post> {
-  private get categoryRepo(): Repository<PostCategory> {
-    return this.repository.manager.getRepository(PostCategory);
-  }
-
-  private get tagRepo(): Repository<PostTag> {
-    return this.repository.manager.getRepository(PostTag);
-  }
-
+export class PostService {
   constructor(
-    @InjectRepository(Post) protected readonly repo: Repository<Post>,
-  ) {
-    super(repo);
+    private readonly prisma: PrismaService,
+  ) {}
+
+  /**
+   * Get simple list (without relations)
+   */
+  async getSimpleList(filters?: any, options?: any) {
+    return this.getList(filters, options);
   }
 
   /**
-   * Áp dụng filter theo group/context mặc định nếu có contextId
+   * Get list of posts
    */
-  protected override prepareFilters(
-    filters?: any,
-    _options?: any,
-  ): boolean | any {
+  async getList(filters?: any, options?: any) {
+    // Apply group filter
+    const preparedFilters = this.prepareFilters(filters);
+
+    const where: Prisma.PostWhereInput = {
+      ...(preparedFilters?.status && { status: preparedFilters.status }),
+      ...(preparedFilters?.group_id !== undefined && { group_id: preparedFilters.group_id ? BigInt(preparedFilters.group_id) : null }),
+      ...(preparedFilters?.primary_category_id && { primary_category_id: BigInt(preparedFilters.primary_category_id) }),
+      deleted_at: null,
+    };
+
+    const orderBy: Prisma.PostOrderByWithRelationInput[] = options?.sort 
+      ? this.parseSort(options.sort)
+      : [{ created_at: 'desc' }];
+
+    const page = options?.page || 1;
+    const limit = options?.limit || 10;
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.post.findMany({
+        where,
+        orderBy,
+        skip,
+        take: limit,
+        include: {
+          primary_category: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+            },
+          },
+          categories: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+            },
+          },
+          tags: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+            },
+          },
+        },
+      }),
+      this.prisma.post.count({ where }),
+    ]);
+
+    // Transform data
+    const transformedData = this.transformPostList(data);
+
+    return {
+      data: transformedData,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * Get one post
+   */
+  async getOne(where: any, options?: any): Promise<any | null> {
+    const whereInput: Prisma.PostWhereInput = {
+      ...(where.id && { id: BigInt(where.id) }),
+      ...(where.slug && { slug: where.slug }),
+      deleted_at: null,
+    };
+
+    const post = await this.prisma.post.findFirst({
+      where: whereInput,
+      include: {
+        primary_category: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+        categories: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+        tags: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+      },
+    });
+
+    if (post) {
+      verifyGroupOwnership({ group_id: post.group_id ? Number(post.group_id) : null });
+      return this.transformPost(post);
+    }
+
+    return null;
+  }
+
+  /**
+   * Create post
+   */
+  async create(data: any, createdBy?: number) {
+    // Ensure slug
+    await this.ensureSlug(data);
+
+    // Prepare data
+    const tagIds = data.tag_ids as number[] | undefined;
+    const categoryIds = data.category_ids as number[] | undefined;
+    const primaryCategoryId = data.primary_category_id ? BigInt(data.primary_category_id) : null;
+    const groupId = data.group_id ? BigInt(data.group_id) : null;
+
+    // Validate tags and categories
+    if (tagIds && tagIds.length > 0) {
+      const tags = await this.prisma.postTag.findMany({
+        where: { id: { in: tagIds.map(id => BigInt(id)) } },
+      });
+      if (tags.length !== tagIds.length) {
+        throw new BadRequestException('Một hoặc nhiều tag ID không hợp lệ');
+      }
+    }
+
+    if (categoryIds && categoryIds.length > 0) {
+      const categories = await this.prisma.postCategory.findMany({
+        where: { id: { in: categoryIds.map(id => BigInt(id)) } },
+      });
+      if (categories.length !== categoryIds.length) {
+        throw new BadRequestException('Một hoặc nhiều category ID không hợp lệ');
+      }
+    }
+
+    // Create post with relations
+    const post = await this.prisma.post.create({
+      data: {
+        name: data.name,
+        slug: data.slug,
+        excerpt: data.excerpt ?? null,
+        content: data.content ?? null,
+        image: data.image ?? null,
+        cover_image: data.cover_image ?? null,
+        status: data.status ?? 'draft',
+        published_at: data.published_at ? new Date(data.published_at) : null,
+        ...(primaryCategoryId && { primary_category: { connect: { id: primaryCategoryId } } }),
+        group_id: groupId,
+        created_user_id: createdBy ?? null,
+        updated_user_id: createdBy ?? null,
+        tags: tagIds && tagIds.length > 0 ? {
+          connect: tagIds.map(id => ({ id: BigInt(id) })),
+        } : undefined,
+        categories: categoryIds && categoryIds.length > 0 ? {
+          connect: categoryIds.map(id => ({ id: BigInt(id) })),
+        } : undefined,
+      },
+      include: {
+        primary_category: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+        categories: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+        tags: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+      },
+    });
+
+    return this.transformPost(post);
+  }
+
+  /**
+   * Update post
+   */
+  async update(id: number, data: any, updatedBy?: number) {
+    const existing = await this.prisma.post.findUnique({ where: { id: BigInt(id) } });
+    if (!existing) {
+      throw new Error(`Post with ID ${id} not found`);
+    }
+
+    verifyGroupOwnership({ group_id: existing.group_id ? Number(existing.group_id) : null });
+
+    // Ensure slug
+    await this.ensureSlug(data, id, existing.slug);
+
+    // Prepare update data
+    const updateData: Prisma.PostUncheckedUpdateInput = {
+      ...(data.name && { name: data.name }),
+      ...(data.slug !== undefined && { slug: data.slug }),
+      ...(data.excerpt !== undefined && { excerpt: data.excerpt }),
+      ...(data.content !== undefined && { content: data.content }),
+      ...(data.image !== undefined && { image: data.image }),
+      ...(data.cover_image !== undefined && { cover_image: data.cover_image }),
+      ...(data.status !== undefined && { status: data.status }),
+      ...(data.published_at !== undefined && { published_at: data.published_at ? new Date(data.published_at) : null }),
+      ...(data.primary_category_id !== undefined && { primary_category_id: data.primary_category_id ? BigInt(data.primary_category_id) : null }),
+      ...(data.group_id !== undefined && { group_id: data.group_id ? BigInt(data.group_id) : null }),
+      updated_user_id: updatedBy ?? existing.updated_user_id,
+    };
+
+    // Handle tags
+    if (data.tag_ids !== undefined) {
+      const tagIds = data.tag_ids as number[] | null | undefined;
+      if (tagIds && tagIds.length > 0) {
+        const tags = await this.prisma.postTag.findMany({
+          where: { id: { in: tagIds.map(id => BigInt(id)) } },
+        });
+        if (tags.length !== tagIds.length) {
+          throw new BadRequestException('Một hoặc nhiều tag ID không hợp lệ');
+        }
+        await this.prisma.post.update({
+          where: { id: BigInt(id) },
+          data: {
+            tags: {
+              set: tagIds.map(id => ({ id: BigInt(id) })),
+            },
+          },
+        });
+      } else {
+        await this.prisma.post.update({
+          where: { id: BigInt(id) },
+          data: {
+            tags: {
+              set: [],
+            },
+          },
+        });
+      }
+    }
+
+    // Handle categories
+    if (data.category_ids !== undefined) {
+      const categoryIds = data.category_ids as number[] | null | undefined;
+      if (categoryIds && categoryIds.length > 0) {
+        const categories = await this.prisma.postCategory.findMany({
+          where: { id: { in: categoryIds.map(id => BigInt(id)) } },
+        });
+        if (categories.length !== categoryIds.length) {
+          throw new BadRequestException('Một hoặc nhiều category ID không hợp lệ');
+        }
+        await this.prisma.post.update({
+          where: { id: BigInt(id) },
+          data: {
+            categories: {
+              set: categoryIds.map(id => ({ id: BigInt(id) })),
+            },
+          },
+        });
+      } else {
+        await this.prisma.post.update({
+          where: { id: BigInt(id) },
+          data: {
+            categories: {
+              set: [],
+            },
+          },
+        });
+      }
+    }
+
+    // Update other fields
+    const post = await this.prisma.post.update({
+      where: { id: BigInt(id) },
+      data: updateData,
+      include: {
+        primary_category: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+        categories: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+        tags: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+      },
+    });
+
+    return this.transformPost(post);
+  }
+
+  /**
+   * Delete post (soft delete)
+   */
+  async delete(id: number) {
+    const existing = await this.prisma.post.findUnique({ where: { id: BigInt(id) } });
+    if (!existing) {
+      throw new Error(`Post with ID ${id} not found`);
+    }
+
+    verifyGroupOwnership({ group_id: existing.group_id ? Number(existing.group_id) : null });
+
+    return this.prisma.post.update({
+      where: { id: BigInt(id) },
+      data: { deleted_at: new Date() },
+    });
+  }
+
+  /**
+   * Prepare filters with group context
+   */
+  private prepareFilters(filters?: any): any {
     const prepared = { ...(filters || {}) };
 
     // Nếu đã truyền group_id trong filters thì không override
@@ -48,211 +373,98 @@ export class PostService extends CrudService<Post> {
   }
 
   /**
-   * Override để load relations trong admin
+   * Transform post list
    */
-  protected override prepareOptions(queryOptions: any = {}) {
-    const base = super.prepareOptions(queryOptions);
-    return {
-      ...base,
-      relations: ['primary_category', 'categories', 'tags'],
-    } as any;
+  private transformPostList(posts: any[]): any[] {
+    return posts.map(post => this.transformPost(post));
   }
 
+  /**
+   * Transform single post
+   */
+  private transformPost(post: any): any {
+    return {
+      ...post,
+      id: Number(post.id),
+      group_id: post.group_id ? Number(post.group_id) : null,
+      primary_category_id: post.primary_category_id ? Number(post.primary_category_id) : null,
+      primary_category: post.primary_category ? {
+        id: Number(post.primary_category.id),
+        name: post.primary_category.name,
+        slug: post.primary_category.slug,
+      } : null,
+      categories: post.categories?.map((cat: any) => ({
+        id: Number(cat.id),
+        name: cat.name,
+        slug: cat.slug,
+      })) || [],
+      tags: post.tags?.map((tag: any) => ({
+        id: Number(tag.id),
+        name: tag.name,
+        slug: tag.slug,
+      })) || [],
+    };
+  }
 
   /**
-   * Transform data sau khi lấy danh sách để chỉ giữ các fields cần thiết
+   * Ensure slug is unique
    */
-  protected async afterGetList(
-    data: Post[],
-    filters?: any,
-    options?: any
-  ): Promise<Post[]> {
-    // Transform để chỉ giữ các fields cần thiết từ relations
-    return data.map(post => {
-      if (post.primary_category) {
-        const { id, name, slug } = post.primary_category;
-        post.primary_category = { id, name, slug } as any;
+  private async ensureSlug(data: any, excludeId?: number, currentSlug?: string): Promise<void> {
+    // If no slug → create from name
+    if (data.name && !data.slug) {
+      data.slug = StringUtil.toSlug(data.name);
+    }
+    
+    // If has slug → check uniqueness
+    if (data.slug) {
+      const normalizedSlug = StringUtil.toSlug(data.slug);
+      
+      // If updating and slug unchanged, skip check
+      if (excludeId && currentSlug && normalizedSlug === StringUtil.toSlug(currentSlug)) {
+        delete data.slug;
+        return;
       }
-      if (post.categories) {
-        post.categories = post.categories.map(cat => {
-          const { id, name, slug } = cat;
-          return { id, name, slug } as any;
-        });
+
+      // Check if slug exists
+      const existing = await this.prisma.post.findFirst({
+        where: {
+          slug: normalizedSlug,
+          ...(excludeId && { id: { not: BigInt(excludeId) } }),
+          deleted_at: null,
+        },
+      });
+
+      if (existing) {
+        // Generate unique slug
+        let counter = 1;
+        let uniqueSlug = normalizedSlug;
+        while (true) {
+          const check = await this.prisma.post.findFirst({
+            where: {
+              slug: uniqueSlug,
+              ...(excludeId && { id: { not: BigInt(excludeId) } }),
+              deleted_at: null,
+            },
+          });
+          if (!check) break;
+          uniqueSlug = `${normalizedSlug}-${counter}`;
+          counter++;
+        }
+        data.slug = uniqueSlug;
+      } else {
+        data.slug = normalizedSlug;
       }
-      if (post.tags) {
-        post.tags = post.tags.map(tag => {
-          const { id, name, slug } = tag;
-          return { id, name, slug } as any;
-        });
-      }
-      return post;
+    }
+  }
+
+  /**
+   * Parse sort string to Prisma orderBy
+   */
+  private parseSort(sort: string | string[]): Prisma.PostOrderByWithRelationInput[] {
+    const sorts = Array.isArray(sort) ? sort : [sort];
+    return sorts.map(s => {
+      const [field, direction] = s.split(':');
+      return { [field]: direction?.toLowerCase() === 'desc' ? 'desc' : 'asc' } as Prisma.PostOrderByWithRelationInput;
     });
   }
-
-  /**
-   * Transform data sau khi lấy một entity
-   */
-  protected async afterGetOne(
-    entity: Post,
-    where?: any,
-    options?: any
-  ): Promise<Post> {
-    // Transform để chỉ giữ các fields cần thiết từ relations
-    if (entity.primary_category) {
-      const { id, name, slug } = entity.primary_category;
-      entity.primary_category = { id, name, slug } as any;
-    }
-    if (entity.categories) {
-      entity.categories = entity.categories.map(cat => {
-        const { id, name, slug } = cat;
-        return { id, name, slug } as any;
-      });
-    }
-    if (entity.tags) {
-      entity.tags = entity.tags.map(tag => {
-        const { id, name, slug } = tag;
-        return { id, name, slug } as any;
-      });
-    }
-    return entity;
-  }
-
-  /**
-   * Hook trước khi tạo - xử lý slug và quan hệ
-   */
-  protected async beforeCreate(entity: Post, createDto: DeepPartial<Post>): Promise<boolean> {
-    await this.ensureSlug(createDto);
-
-    // Tối ưu: Load tags và categories trước khi save để chỉ save một lần
-    const tagIds = (createDto as any).tag_ids as number[] | undefined;
-    const categoryIds = (createDto as any).category_ids as number[] | undefined;
-    const hasTagIds = tagIds != null && Array.isArray(tagIds) && tagIds.length > 0;
-    const hasCategoryIds = categoryIds != null && Array.isArray(categoryIds) && categoryIds.length > 0;
-
-    if (hasTagIds || hasCategoryIds) {
-      const [tags, categories] = await Promise.all([
-        hasTagIds ? this.tagRepo.find({ where: { id: In(tagIds!) } }) : Promise.resolve([]),
-        hasCategoryIds ? this.categoryRepo.find({ where: { id: In(categoryIds!) } }) : Promise.resolve([]),
-      ]);
-
-      // Gán quan hệ vào createDto để entity được tạo với relations đầy đủ
-      (createDto as any).tags = tags;
-      (createDto as any).categories = categories;
-    }
-
-    // Dọn dẹp trường quan hệ dạng IDs khỏi DTO trước khi persist
-    delete (createDto as any).tag_ids;
-    delete (createDto as any).category_ids;
-    return true;
-  }
-
-
-  /**
-   * Sau khi tạo: không cần làm gì vì relations đã được set trong beforeCreate
-   */
-  protected async afterCreate(entity: Post, createDto: DeepPartial<Post>): Promise<void> {
-    // Relations đã được set trong beforeCreate, không cần save lại
-  }
-
-  /**
-   * Sau khi cập nhật: sync quan hệ nếu field ids được gửi lên
-   */
-  protected async afterUpdate(entity: Post, updateDto: DeepPartial<Post>): Promise<void> {
-    const tagIdsProvided = (updateDto as any).tag_ids !== undefined;
-    const categoryIdsProvided = (updateDto as any).category_ids !== undefined;
-    if (!tagIdsProvided && !categoryIdsProvided) return;
-
-    const promises: Promise<any>[] = [];
-    let tags: PostTag[] = [];
-    let categories: PostCategory[] = [];
-
-    if (tagIdsProvided) {
-      const tagIds = (updateDto as any).tag_ids as number[] | null | undefined;
-      if (tagIds != null && Array.isArray(tagIds) && tagIds.length > 0) {
-        promises.push(
-          this.tagRepo.find({ 
-            where: { id: In(tagIds) },
-            select: ['id']
-          }).then(res => {
-            if (res.length !== tagIds.length) {
-              throw new BadRequestException('Một hoặc nhiều tag ID không hợp lệ');
-            }
-            tags = res;
-          })
-        );
-      }
-    }
-
-    if (categoryIdsProvided) {
-      const categoryIds = (updateDto as any).category_ids as number[] | null | undefined;
-      if (categoryIds != null && Array.isArray(categoryIds) && categoryIds.length > 0) {
-        promises.push(
-          this.categoryRepo.find({ 
-            where: { id: In(categoryIds) },
-            select: ['id']
-          }).then(res => {
-            if (res.length !== categoryIds.length) {
-              throw new BadRequestException('Một hoặc nhiều category ID không hợp lệ');
-            }
-            categories = res;
-          })
-        );
-      }
-    }
-
-    if (promises.length > 0) await Promise.all(promises);
-
-    if (tagIdsProvided) entity.tags = tags;
-    if (categoryIdsProvided) entity.categories = categories;
-    await this.repository.save(entity);
-  }
-
-  /**
-   * Override getOne để load relations và verify ownership
-   */
-  override async getOne(where: any, options?: any): Promise<Post | null> {
-    // Đảm bảo load relations trong admin
-    const adminOptions = {
-      ...options,
-      relations: ['primary_category', 'categories', 'tags'],
-    };
-    const post = await super.getOne(where, adminOptions);
-    if (post) {
-      verifyGroupOwnership(post);
-    }
-    return post;
-  }
-
-  /**
-   * Override beforeUpdate để verify ownership
-   */
-  protected override async beforeUpdate(
-    entity: Post,
-    updateDto: DeepPartial<Post>,
-    response?: any
-  ): Promise<boolean> {
-    verifyGroupOwnership(entity);
-    await this.ensureSlug(updateDto, entity.id, entity.slug);
-    if ('tag_ids' in (updateDto as any)) {
-      delete (updateDto as any).tag_ids;
-    }
-    if ('category_ids' in (updateDto as any)) {
-      delete (updateDto as any).category_ids;
-    }
-    return true;
-  }
-
-  /**
-   * Override beforeDelete để verify ownership
-   */
-  protected override async beforeDelete(
-    entity: Post,
-    response?: any
-  ): Promise<boolean> {
-    verifyGroupOwnership(entity);
-    return true;
-  }
-
 }
-
-

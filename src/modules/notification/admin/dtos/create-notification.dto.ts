@@ -1,5 +1,5 @@
 import { IsString, IsOptional, IsEnum, IsNumber, IsObject } from 'class-validator';
-import { NotificationType } from '@/shared/entities/notification.entity';
+import { NotificationType } from '@/shared/enums';
 import { BasicStatus } from '@/shared/enums/basic-status.enum';
 
 export class CreateNotificationDto {

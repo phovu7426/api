@@ -1,80 +1,147 @@
 import { Injectable, ConflictException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DeepPartial } from 'typeorm';
-import { BannerLocation } from '@/shared/entities/banner-location.entity';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
 import { BasicStatus } from '@/shared/enums/basic-status.enum';
-import { CrudService } from '@/common/base/services/crud.service';
-import { ResponseRef } from '@/common/base/utils/response-ref.helper';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
-export class BannerLocationService extends CrudService<BannerLocation> {
+export class BannerLocationService {
     constructor(
-        @InjectRepository(BannerLocation)
-        protected readonly bannerLocationRepository: Repository<BannerLocation>,
-    ) {
-        super(bannerLocationRepository);
+        private readonly prisma: PrismaService,
+    ) {}
+
+  /**
+   * Get simple list (without relations)
+   */
+  async getSimpleList(filters?: any, options?: any) {
+    return this.getList(filters, options);
+  }
+
+  /**
+   * Get list of banner locations
+   */
+  async getList(filters?: any, options?: any) {
+        const where: Prisma.BannerLocationWhereInput = {
+            ...(filters?.status && { status: filters.status }),
+            ...(filters?.code && { code: { contains: filters.code } }),
+            deleted_at: null,
+        };
+
+        const orderBy: Prisma.BannerLocationOrderByWithRelationInput[] = options?.sort 
+            ? this.parseSort(options.sort)
+            : [{ created_at: 'desc' }];
+
+        const page = options?.page || 1;
+        const limit = options?.limit || 10;
+        const skip = (page - 1) * limit;
+
+        const [data, total] = await Promise.all([
+            this.prisma.bannerLocation.findMany({
+                where,
+                orderBy,
+                skip,
+                take: limit,
+            }),
+            this.prisma.bannerLocation.count({ where }),
+        ]);
+
+        return {
+            data,
+            meta: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit),
+            },
+        };
     }
 
     /**
-     * Hook: Validate code unique trước khi tạo
+     * Get one banner location
      */
-    protected async beforeCreate(
-        entity: BannerLocation,
-        createDto: DeepPartial<BannerLocation>,
-        response?: ResponseRef<BannerLocation | null>
-    ): Promise<boolean> {
-        if (createDto.code) {
-            const existingLocation = await this.bannerLocationRepository.findOne({
-                where: { code: createDto.code as string },
-            });
+    async getOne(where: Prisma.BannerLocationWhereUniqueInput) {
+        return this.prisma.bannerLocation.findUnique({
+            where: { ...where, deleted_at: null },
+        });
+    }
 
-            if (existingLocation) {
-                throw new ConflictException(`Mã vị trí banner "${createDto.code}" đã tồn tại`);
+    /**
+     * Create banner location
+     */
+    async create(data: Prisma.BannerLocationCreateInput, createdBy?: number) {
+        // Check code unique
+        if (data.code) {
+            const existing = await this.prisma.bannerLocation.findUnique({
+                where: { code: data.code as string },
+            });
+            if (existing) {
+                throw new ConflictException(`Mã vị trí banner "${data.code}" đã tồn tại`);
             }
         }
 
-        return true;
+        return this.prisma.bannerLocation.create({
+            data: {
+                ...data,
+                created_user_id: createdBy ?? null,
+                updated_user_id: createdBy ?? null,
+            },
+        });
     }
 
     /**
-     * Hook: Validate code unique trước khi cập nhật
+     * Update banner location
      */
-    protected async beforeUpdate(
-        entity: BannerLocation,
-        updateDto: DeepPartial<BannerLocation>,
-        response?: ResponseRef<BannerLocation | null>
-    ): Promise<boolean> {
-        if (updateDto.code && updateDto.code !== entity.code) {
-            const existingLocation = await this.bannerLocationRepository.findOne({
-                where: { code: updateDto.code as string },
-            });
+    async update(id: number | bigint, data: Prisma.BannerLocationUpdateInput, updatedBy?: number) {
+        const idBigInt = typeof id === 'number' ? BigInt(id) : id;
+        const existing = await this.prisma.bannerLocation.findUnique({ where: { id: idBigInt } });
+        if (!existing) {
+            throw new Error(`Banner location with ID ${id} not found`);
+        }
 
-            if (existingLocation) {
-                throw new ConflictException(`Mã vị trí banner "${updateDto.code}" đã tồn tại`);
+        // Check code unique if changed
+        if (data.code && data.code !== existing.code) {
+            const codeExists = await this.prisma.bannerLocation.findUnique({
+                where: { code: data.code as string },
+            });
+            if (codeExists) {
+                throw new ConflictException(`Mã vị trí banner "${data.code}" đã tồn tại`);
             }
         }
 
-        return true;
+        return this.prisma.bannerLocation.update({
+            where: { id: idBigInt },
+            data: {
+                ...data,
+                updated_user_id: updatedBy ?? existing.updated_user_id,
+            },
+        });
     }
 
-    /**
-     * Override prepareOptions để thêm sort mặc định
-     */
-    protected prepareOptions(queryOptions: any = {}): any {
-        const options = super.prepareOptions(queryOptions);
-        
-        // Thêm sort mặc định theo created_at
-        if (!options.sort) {
-            options.sort = 'created_at:DESC';
-        }
-
-        return options;
+  /**
+   * Delete banner location
+   */
+  async delete(id: number | bigint) {
+    const idBigInt = typeof id === 'number' ? BigInt(id) : id;
+    return this.prisma.bannerLocation.update({
+      where: { id: idBigInt },
+            data: { deleted_at: new Date() },
+        });
     }
 
+  /**
+   * Change status
+   */
+  async changeStatus(id: number | bigint, status: BasicStatus) {
+    return this.update(id, { status });
+  }
+
     /**
-     * Thay đổi trạng thái banner location
+     * Parse sort string to Prisma orderBy
      */
-    async changeStatus(id: number, status: BasicStatus) {
-        return this.update(id, { status } as any);
+    private parseSort(sort: string | string[]): Prisma.BannerLocationOrderByWithRelationInput[] {
+        const sorts = Array.isArray(sort) ? sort : [sort];
+        return sorts.map(s => {
+            const [field, direction] = s.split(':');
+            return { [field]: direction?.toLowerCase() === 'desc' ? 'desc' : 'asc' } as Prisma.BannerLocationOrderByWithRelationInput;
+        });
     }
 }

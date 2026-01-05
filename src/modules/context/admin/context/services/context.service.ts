@@ -1,20 +1,14 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Context } from '@/shared/entities/context.entity';
-import { CrudService } from '@/common/base/services/crud.service';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 import { RbacService } from '@/modules/rbac/services/rbac.service';
 
 @Injectable()
-export class AdminContextService extends CrudService<Context> {
+export class AdminContextService {
   constructor(
-    @InjectRepository(Context)
-    private readonly contextRepo: Repository<Context>,
-    @Inject(forwardRef(() => RbacService))
+    private readonly prisma: PrismaService,
     private readonly rbacService: RbacService,
-  ) {
-    super(contextRepo);
-  }
+  ) {}
 
   /**
    * Kiểm tra user có phải system admin không
@@ -27,29 +21,113 @@ export class AdminContextService extends CrudService<Context> {
   }
 
   /**
+   * Get list of contexts
+   */
+  async getList(filters?: any, options?: any) {
+    const where: Prisma.ContextWhereInput = {
+      ...(filters?.status && { status: filters.status }),
+      ...(filters?.type && { type: filters.type }),
+      deleted_at: null,
+    };
+
+    const orderBy: Prisma.ContextOrderByWithRelationInput[] = options?.sort 
+      ? this.parseSort(options.sort)
+      : [{ created_at: 'desc' }];
+
+    const page = options?.page || 1;
+    const limit = options?.limit || 10;
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.context.findMany({
+        where,
+        orderBy,
+        skip,
+        take: limit,
+      }),
+      this.prisma.context.count({ where }),
+    ]);
+
+    return {
+      data: data.map(ctx => ({
+        ...ctx,
+        id: Number(ctx.id),
+        ref_id: ctx.ref_id ? Number(ctx.ref_id) : null,
+      })),
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * Get one context
+   */
+  async getOne(where: any): Promise<any | null> {
+    const whereInput: Prisma.ContextWhereInput = {
+      ...(where.id && { id: BigInt(where.id) }),
+      ...(where.code && { code: where.code }),
+      deleted_at: null,
+    };
+
+    const context = await this.prisma.context.findFirst({
+      where: whereInput,
+    });
+
+    if (!context) {
+      return null;
+    }
+
+    return {
+      ...context,
+      id: Number(context.id),
+      ref_id: context.ref_id ? Number(context.ref_id) : null,
+    };
+  }
+
+  /**
    * Lấy context theo ID
    */
-  async findById(id: number): Promise<Context | null> {
-    return this.contextRepo.findOne({
-      where: { id, status: 'active' },
+  async findById(id: number): Promise<any | null> {
+    const context = await this.prisma.context.findUnique({
+      where: { id: BigInt(id) },
     });
+
+    if (!context || context.status !== 'active') {
+      return null;
+    }
+
+    return {
+      ...context,
+      id: Number(context.id),
+      ref_id: context.ref_id ? Number(context.ref_id) : null,
+    };
   }
 
   /**
    * Lấy context theo type và ref_id
    */
-  async findByTypeAndRefId(type: string, refId: number | null): Promise<Context | null> {
-    const queryBuilder = this.contextRepo
-      .createQueryBuilder('context')
-      .where('context.type = :type', { type });
+  async findByTypeAndRefId(type: string, refId: number | null): Promise<any | null> {
+    const context = await this.prisma.context.findFirst({
+      where: {
+        type,
+        ref_id: refId === null ? null : BigInt(refId),
+        deleted_at: null,
+      },
+    });
 
-    if (refId === null) {
-      queryBuilder.andWhere('context.ref_id IS NULL');
-    } else {
-      queryBuilder.andWhere('context.ref_id = :refId', { refId });
+    if (!context) {
+      return null;
     }
 
-    return queryBuilder.getOne();
+    return {
+      ...context,
+      id: Number(context.id),
+      ref_id: context.ref_id ? Number(context.ref_id) : null,
+    };
   }
 
   /**
@@ -64,7 +142,7 @@ export class AdminContextService extends CrudService<Context> {
       status?: string;
     },
     requesterUserId: number,
-  ): Promise<Context> {
+  ): Promise<any> {
     // Check system admin
     const isAdmin = await this.isSystemAdmin(requesterUserId);
     if (!isAdmin) {
@@ -81,22 +159,30 @@ export class AdminContextService extends CrudService<Context> {
     const code = data.code || `${data.type}-${data.ref_id ?? 'system'}`;
 
     // Check code unique
-    const existingByCode = await this.contextRepo.findOne({
-      where: { code } as any,
+    const existingByCode = await this.prisma.context.findFirst({
+      where: { code, deleted_at: null },
     });
     if (existingByCode) {
       throw new BadRequestException(`Context with code "${code}" already exists`);
     }
 
-    const context = this.contextRepo.create({
-      type: data.type,
-      ref_id: data.ref_id ?? null,
-      name: data.name,
-      code,
-      status: data.status || 'active',
+    const context = await this.prisma.context.create({
+      data: {
+        type: data.type,
+        ref_id: data.ref_id ? BigInt(data.ref_id) : null,
+        name: data.name,
+        code,
+        status: data.status || 'active',
+        created_user_id: requesterUserId ? BigInt(requesterUserId) : null,
+        updated_user_id: requesterUserId ? BigInt(requesterUserId) : null,
+      },
     });
 
-    return this.contextRepo.save(context);
+    return {
+      ...context,
+      id: Number(context.id),
+      ref_id: context.ref_id ? Number(context.ref_id) : null,
+    };
   }
 
   /**
@@ -106,7 +192,7 @@ export class AdminContextService extends CrudService<Context> {
     id: number,
     data: Partial<{ name: string; code: string; status: string }>,
     requesterUserId: number,
-  ): Promise<Context> {
+  ): Promise<any> {
     // Check system admin
     const isAdmin = await this.isSystemAdmin(requesterUserId);
     if (!isAdmin) {
@@ -125,16 +211,29 @@ export class AdminContextService extends CrudService<Context> {
 
     // Check code unique nếu có thay đổi code
     if (data.code && data.code !== context.code) {
-      const existing = await this.contextRepo.findOne({
-        where: { code: data.code } as any,
+      const existing = await this.prisma.context.findFirst({
+        where: { code: data.code, deleted_at: null },
       });
       if (existing) {
         throw new BadRequestException(`Context with code "${data.code}" already exists`);
       }
     }
 
-    Object.assign(context, data);
-    return this.contextRepo.save(context);
+    const updated = await this.prisma.context.update({
+      where: { id: BigInt(id) },
+      data: {
+        ...(data.name !== undefined && { name: data.name }),
+        ...(data.code !== undefined && { code: data.code }),
+        ...(data.status !== undefined && { status: data.status }),
+        updated_user_id: requesterUserId ? BigInt(requesterUserId) : null,
+      },
+    });
+
+    return {
+      ...updated,
+      id: Number(updated.id),
+      ref_id: updated.ref_id ? Number(updated.ref_id) : null,
+    };
   }
 
   /**
@@ -152,16 +251,29 @@ export class AdminContextService extends CrudService<Context> {
     }
 
     // Check xem có groups nào đang dùng context này không
-    const groupsCount = await this.contextRepo.manager
-      .getRepository('Group')
-      .count({ where: { context_id: id } } as any);
+    const groupsCount = await this.prisma.group.count({
+      where: { context_id: BigInt(id), deleted_at: null },
+    });
 
     if (groupsCount > 0) {
       throw new BadRequestException(`Cannot delete context: ${groupsCount} group(s) are using this context`);
     }
 
     // Soft delete
-    await this.contextRepo.softDelete(id);
+    await this.prisma.context.update({
+      where: { id: BigInt(id) },
+      data: { deleted_at: new Date() },
+    });
+  }
+
+  /**
+   * Parse sort string to Prisma orderBy
+   */
+  private parseSort(sort: string | string[]): Prisma.ContextOrderByWithRelationInput[] {
+    const sorts = Array.isArray(sort) ? sort : [sort];
+    return sorts.map(s => {
+      const [field, direction] = s.split(':');
+      return { [field]: direction?.toLowerCase() === 'desc' ? 'desc' : 'asc' } as Prisma.ContextOrderByWithRelationInput;
+    });
   }
 }
-

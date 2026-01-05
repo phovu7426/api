@@ -41,13 +41,13 @@ export class CreatePostDto {
   @IsOptional()
   @IsString()
   @MaxLength(500)
-  @ValidateIf((o) => o.post_type === PostType.VIDEO)
+  @ValidateIf((o) => o.post_type === PostType.video)
   video_url?: string;
 
   @IsOptional()
   @IsString()
   @MaxLength(500)
-  @ValidateIf((o) => o.post_type === PostType.AUDIO)
+  @ValidateIf((o) => o.post_type === PostType.audio)
   audio_url?: string;
 
   @IsOptional()

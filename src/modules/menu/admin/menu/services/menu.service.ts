@@ -1,120 +1,213 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DeepPartial } from 'typeorm';
-import { Menu } from '@/shared/entities/menu.entity';
-import { Permission } from '@/shared/entities/permission.entity';
-import { CrudService } from '@/common/base/services/crud.service';
-import { ResponseRef } from '@/common/base/utils/response-ref.helper';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 import { RbacService } from '@/modules/rbac/services/rbac.service';
 import { RequestContext } from '@/common/utils/request-context.util';
 import { BasicStatus } from '@/shared/enums/basic-status.enum';
 import { MenuTreeItem } from '@/modules/menu/admin/menu/interfaces/menu-tree-item.interface';
 
 @Injectable()
-export class MenuService extends CrudService<Menu> {
+export class MenuService {
   private readonly logger = new Logger(MenuService.name);
 
-  private get permRepo(): Repository<Permission> {
-    return this.repository.manager.getRepository(Permission);
-  }
-
   constructor(
-    @InjectRepository(Menu) protected readonly repository: Repository<Menu>,
+    private readonly prisma: PrismaService,
     @Inject(RbacService) private readonly rbacService: RbacService,
-  ) {
-    super(repository);
+  ) {}
+
+  /**
+   * Get simple list (without relations)
+   */
+  async getSimpleList(filters?: any, options?: any) {
+    return this.getList(filters, options);
   }
 
-  protected override prepareOptions(queryOptions: any = {}) {
-    const base = super.prepareOptions(queryOptions);
+  /**
+   * Get list of menus
+   */
+  async getList(filters?: any, options?: any) {
+    const where: Prisma.MenuWhereInput = {
+      ...(filters?.status && { status: filters.status }),
+      ...(filters?.code && { code: { contains: filters.code } }),
+      ...(filters?.parent_id !== undefined && { parent_id: filters.parent_id ? BigInt(filters.parent_id) : null }),
+      deleted_at: null,
+    };
+
+    const orderBy: Prisma.MenuOrderByWithRelationInput[] = options?.sort 
+      ? this.parseSort(options.sort)
+      : [{ sort_order: 'asc' }];
+
+    const page = options?.page || 1;
+    const limit = options?.limit || 10;
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.menu.findMany({
+        where,
+        orderBy,
+        skip,
+        take: limit,
+        include: {
+          parent: true,
+          children: true,
+          required_permission: true,
+          menu_permissions: {
+            include: {
+              permission: true,
+            },
+          },
+        },
+      }),
+      this.prisma.menu.count({ where }),
+    ]);
+
     return {
-      ...base,
-      relations: ['parent', 'children', 'required_permission', 'menu_permissions'],
-    } as any;
+      data: data.map(menu => ({
+        ...menu,
+        id: Number(menu.id),
+        parent_id: menu.parent_id ? Number(menu.parent_id) : null,
+        required_permission_id: menu.required_permission_id ? Number(menu.required_permission_id) : null,
+      })),
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
-  protected async beforeCreate(
-    entity: Menu,
-    createDto: DeepPartial<Menu>,
-    response?: ResponseRef<Menu | null>
-  ): Promise<boolean> {
-    const code = (createDto as any).code;
-    if (code) {
-      const exists = await this.getOne({ code } as any);
-      if (exists) {
-        if (response) {
-          response.message = 'Menu code already exists';
-          response.code = 'MENU_CODE_EXISTS';
-        }
-        return false;
-      }
+  /**
+   * Get one menu
+   */
+  async getOne(where: any): Promise<any | null> {
+    const whereInput: Prisma.MenuWhereInput = {
+      ...(where.id && { id: BigInt(where.id) }),
+      ...(where.code && { code: where.code }),
+      deleted_at: null,
+    };
+
+    const menu = await this.prisma.menu.findFirst({
+      where: whereInput,
+      include: {
+        parent: true,
+        children: true,
+        required_permission: true,
+        menu_permissions: {
+          include: {
+            permission: true,
+          },
+        },
+      },
+    });
+
+    if (!menu) {
+      return null;
     }
 
-    const parentId = (createDto as any).parent_id;
-    if (parentId) {
-      const parent = await this.getOne({ id: parentId } as any);
-      if (parent) {
-        (createDto as any).parent = parent;
-      }
-      delete (createDto as any).parent_id;
-    }
-
-    const permissionId = (createDto as any).required_permission_id;
-    if (permissionId) {
-      const permission = await this.permRepo.findOne({ where: { id: permissionId } });
-      if (permission) {
-        (createDto as any).required_permission = permission;
-      }
-      delete (createDto as any).required_permission_id;
-    }
-
-    return true;
+    return {
+      ...menu,
+      id: Number(menu.id),
+      parent_id: menu.parent_id ? Number(menu.parent_id) : null,
+      required_permission_id: menu.required_permission_id ? Number(menu.required_permission_id) : null,
+    };
   }
 
-  protected async beforeUpdate(
-    entity: Menu,
-    updateDto: DeepPartial<Menu>,
-    response?: ResponseRef<Menu | null>
-  ): Promise<boolean> {
-    const code = (updateDto as any).code;
-    if (code && code !== entity.code) {
-      const exists = await this.getOne({ code } as any);
+  /**
+   * Create menu
+   */
+  async create(data: any, createdBy?: number) {
+    // Check code unique
+    if (data.code) {
+      const exists = await this.getOne({ code: data.code });
       if (exists) {
-        if (response) {
-          response.message = 'Menu code already exists';
-          response.code = 'MENU_CODE_EXISTS';
-        }
-        return false;
+        throw new Error('Menu code already exists');
       }
     }
 
-    const parentId = (updateDto as any).parent_id;
-    if (parentId !== undefined) {
-      if (parentId === null) {
-        (updateDto as any).parent = null;
-      } else {
-        const parent = await this.getOne({ id: parentId } as any);
-        if (parent) {
-          (updateDto as any).parent = parent;
-        }
-      }
-      delete (updateDto as any).parent_id;
+    return this.prisma.menu.create({
+      data: {
+        code: data.code,
+        name: data.name,
+        path: data.path ?? null,
+        icon: data.icon ?? null,
+        type: data.type ?? 'menu',
+        status: data.status ?? BasicStatus.active,
+        show_in_menu: data.show_in_menu ?? true,
+        sort_order: data.sort_order ?? 0,
+        is_public: data.is_public ?? false,
+        parent_id: data.parent_id ? BigInt(data.parent_id) : null,
+        required_permission_id: data.required_permission_id ? BigInt(data.required_permission_id) : null,
+        created_user_id: createdBy ?? null,
+        updated_user_id: createdBy ?? null,
+      },
+      include: {
+        parent: true,
+        children: true,
+        required_permission: true,
+        menu_permissions: {
+          include: {
+            permission: true,
+          },
+        },
+      },
+    });
+  }
+
+  /**
+   * Update menu
+   */
+  async update(id: number, data: any, updatedBy?: number) {
+    const existing = await this.prisma.menu.findUnique({ where: { id: BigInt(id) } });
+    if (!existing) {
+      throw new Error(`Menu with ID ${id} not found`);
     }
 
-    const permissionId = (updateDto as any).required_permission_id;
-    if (permissionId !== undefined) {
-      if (permissionId === null) {
-        (updateDto as any).required_permission = null;
-      } else {
-        const permission = await this.permRepo.findOne({ where: { id: permissionId } });
-        if (permission) {
-          (updateDto as any).required_permission = permission;
-        }
+    // Check code unique if changed
+    if (data.code && data.code !== existing.code) {
+      const exists = await this.getOne({ code: data.code });
+      if (exists) {
+        throw new Error('Menu code already exists');
       }
-      delete (updateDto as any).required_permission_id;
     }
 
-    return true;
+    return this.prisma.menu.update({
+      where: { id: BigInt(id) },
+      data: {
+        ...(data.code !== undefined && { code: data.code }),
+        ...(data.name !== undefined && { name: data.name }),
+        ...(data.path !== undefined && { path: data.path }),
+        ...(data.icon !== undefined && { icon: data.icon }),
+        ...(data.type !== undefined && { type: data.type }),
+        ...(data.status !== undefined && { status: data.status }),
+        ...(data.show_in_menu !== undefined && { show_in_menu: data.show_in_menu }),
+        ...(data.sort_order !== undefined && { sort_order: data.sort_order }),
+        ...(data.is_public !== undefined && { is_public: data.is_public }),
+        ...(data.parent_id !== undefined && { parent_id: data.parent_id ? BigInt(data.parent_id) : null }),
+        ...(data.required_permission_id !== undefined && { required_permission_id: data.required_permission_id ? BigInt(data.required_permission_id) : null }),
+        updated_user_id: updatedBy ?? existing.updated_user_id,
+      },
+      include: {
+        parent: true,
+        children: true,
+        required_permission: true,
+        menu_permissions: {
+          include: {
+            permission: true,
+          },
+        },
+      },
+    });
+  }
+
+  /**
+   * Delete menu (soft delete)
+   */
+  async delete(id: number) {
+    return this.prisma.menu.update({
+      where: { id: BigInt(id) },
+      data: { deleted_at: new Date() },
+    });
   }
 
   /**
@@ -127,7 +220,6 @@ export class MenuService extends CrudService<Menu> {
         page: 1,
         limit: 10000, // Get all menus for tree
         sort: 'sort_order:ASC',
-        relations: ['parent', 'children', 'required_permission'],
       }
     );
 
@@ -144,65 +236,68 @@ export class MenuService extends CrudService<Menu> {
     const includeInactive = options?.include_inactive || false;
     const flatten = options?.flatten || false;
     
-    // ✅ MỚI: Lấy groupId từ RequestContext (group-based)
+    // Get groupId from RequestContext
     const groupId = RequestContext.get<number | null>('groupId');
     
-    // Lấy context từ RequestContext hoặc từ group
+    // Get context from RequestContext or from group
     let context = RequestContext.get<any>('context');
     let contextType: string | null = null;
     
     if (groupId) {
-      // Nếu có groupId, lấy context từ group
-      const groupRepo = this.repository.manager.getRepository('Group');
-      const group = await groupRepo.findOne({ 
-        where: { id: groupId },
-        relations: ['context']
-      } as any);
+      // If has groupId, get context from group
+      const group = await this.prisma.group.findUnique({
+        where: { id: BigInt(groupId) },
+        include: {
+          context: true,
+        },
+      });
       
-      if (group && group.context) {
+      if (group?.context) {
         context = group.context;
         contextType = group.context.type;
-      } else if (group && group.context_id) {
-        const contextRepo = this.repository.manager.getRepository('Context');
-        context = await contextRepo.findOne({ where: { id: group.context_id } } as any);
-        contextType = context?.type || null;
+      } else if (group?.context_id) {
+        const contextData = await this.prisma.context.findUnique({
+          where: { id: group.context_id },
+        });
+        context = contextData;
+        contextType = contextData?.type || null;
       }
     } else {
-      // Nếu không có groupId, lấy từ RequestContext
+      // If no groupId, get from RequestContext
       context = RequestContext.get<any>('context');
       contextType = context?.type || null;
     }
     
-    // Fallback: nếu không có context type, dùng system
+    // Fallback: if no context type, use system
     if (!contextType) {
       contextType = 'system';
     }
 
-    // Query menus using QueryBuilder to properly load nested relations
-    // ✅ MỚI: Không filter theo context prefix nữa, chỉ filter theo permission
-    const queryBuilder = this.repository.createQueryBuilder('menu')
-      .leftJoinAndSelect('menu.parent', 'parent')
-      .leftJoinAndSelect('menu.children', 'children')
-      .leftJoinAndSelect('menu.required_permission', 'required_permission')
-      .leftJoinAndSelect('menu.menu_permissions', 'menu_permissions')
-      .leftJoinAndSelect('menu_permissions.permission', 'permission')
-      .where('menu.show_in_menu = :showInMenu', { showInMenu: true });
+    // Query menus
+    const where: Prisma.MenuWhereInput = {
+      show_in_menu: true,
+      ...(!includeInactive && { status: BasicStatus.active }),
+      deleted_at: null,
+    };
 
-    this.logger.debug(`Getting all menus for user ${userId} in groupId=${groupId}, contextType=${contextType}`);
-
-    if (!includeInactive) {
-      queryBuilder.andWhere('menu.status = :status', { status: BasicStatus.Active });
-    }
-
-    queryBuilder.orderBy('menu.sort_order', 'ASC');
-
-    const menus = await queryBuilder.getMany();
+    const menus = await this.prisma.menu.findMany({
+      where,
+      orderBy: { sort_order: 'asc' },
+      include: {
+        parent: true,
+        children: true,
+        required_permission: true,
+        menu_permissions: {
+          include: {
+            permission: true,
+          },
+        },
+      },
+    });
     
-    // Log menu codes để debug
-    const menuCodes = menus.map(m => m.code).join(', ');
-    this.logger.debug(`Query result: Found ${menus.length} menus with codes: [${menuCodes}]`);
+    this.logger.debug(`Query result: Found ${menus.length} menus for user ${userId} in groupId=${groupId}, contextType=${contextType}`);
 
-    // Nếu không có menu nào, trả về empty
+    // If no menus, return empty
     if (!menus || menus.length === 0) {
       this.logger.warn(`No menus found for user ${userId} in groupId ${groupId}`);
       return [];
@@ -210,8 +305,7 @@ export class MenuService extends CrudService<Menu> {
 
     this.logger.debug(`Found ${menus.length} menus, checking permissions for user ${userId} in groupId ${groupId}`);
     
-    // ✅ MỚI: Lấy tất cả permissions của user trong group để check
-    // Build set of all permissions user has
+    // Get all permissions user has
     const allPerms = new Set<string>();
     const testPerms = menus
       .filter(m => m.required_permission?.code || m.menu_permissions?.length)
@@ -220,25 +314,23 @@ export class MenuService extends CrudService<Menu> {
         ...(m.menu_permissions?.map(mp => mp.permission?.code).filter(Boolean) || []),
       ]);
 
-    // Check từng permission một cách hiệu quả
+    // Check each permission
     for (const perm of new Set(testPerms)) {
-      // ✅ Dùng group-based permissions: user lấy menu dựa vào quyền trong group
       const hasPerm = await this.rbacService.userHasPermissionsInGroup(userId, groupId ?? null, [perm]);
       if (hasPerm) {
         allPerms.add(perm);
       }
     }
 
-    // Filter menus by permissions (không có bypass)
-    // ✅ MỚI: Mỗi menu chỉ có 1 permission (required_permission), không cần check menu_permissions nữa
+    // Filter menus by permissions
     let filteredMenus = menus.filter(menu => {
-      // Menu public luôn hiển thị
+      // Menu public always show
       if (menu.is_public) {
         this.logger.debug(`Menu ${menu.code}: PUBLIC - showing`);
         return true;
       }
       
-      // Menu không có permission requirement → hiển thị
+      // Menu no permission requirement → show
       const hasNoPermissionRequirement = 
         (!menu.required_permission_id && !menu.required_permission);
       
@@ -247,16 +339,16 @@ export class MenuService extends CrudService<Menu> {
         return true;
       }
       
-      // ✅ MỚI: Menu có required_permission → check user có permission trong group không
+      // Menu has required_permission → check user has permission in group
       if (menu.required_permission?.code) {
         const hasRequiredPerm = allPerms.has(menu.required_permission.code);
-        this.logger.debug(`Menu ${menu.code}: required_permission=${menu.required_permission.code}, has=${hasRequiredPerm}, userPerms=[${Array.from(allPerms).join(', ')}]`);
+        this.logger.debug(`Menu ${menu.code}: required_permission=${menu.required_permission.code}, has=${hasRequiredPerm}`);
         if (hasRequiredPerm) {
           return true;
         }
       }
       
-      // Fallback: Nếu vẫn dùng menu_permissions (legacy)
+      // Fallback: If still using menu_permissions (legacy)
       if (menu.menu_permissions && menu.menu_permissions.length > 0) {
         const menuPermCodes = menu.menu_permissions.map(mp => mp.permission?.code).filter(Boolean);
         const hasAnyPerm = menuPermCodes.some(code => allPerms.has(code));
@@ -266,12 +358,11 @@ export class MenuService extends CrudService<Menu> {
         }
       }
       
-      this.logger.debug(`Menu ${menu.code}: FILTERED OUT - no matching permissions. required_permission=${menu.required_permission?.code || 'none'}, userPerms=[${Array.from(allPerms).join(', ')}]`);
+      this.logger.debug(`Menu ${menu.code}: FILTERED OUT - no matching permissions`);
       return false;
     });
 
-    // ✅ MỚI: Filter các menu system-only (chỉ hiển thị trong system group)
-    // Các menu này chỉ hiển thị khi context type là 'system'
+    // Filter system-only menus (only show in system group)
     if (contextType !== 'system') {
       const systemOnlyPermissions = [
         'role.manage',
@@ -293,15 +384,15 @@ export class MenuService extends CrudService<Menu> {
       ];
       
       filteredMenus = filteredMenus.filter(menu => {
-        // Check theo permission code
+        // Check by permission code
         if (menu.required_permission?.code && systemOnlyPermissions.includes(menu.required_permission.code)) {
-          this.logger.debug(`Menu ${menu.code}: SYSTEM-ONLY (permission=${menu.required_permission.code}) - filtered out for contextType=${contextType}`);
+          this.logger.debug(`Menu ${menu.code}: SYSTEM-ONLY (permission=${menu.required_permission.code}) - filtered out`);
           return false;
         }
         
-        // Check theo menu code
+        // Check by menu code
         if (systemOnlyMenuCodes.includes(menu.code)) {
-          this.logger.debug(`Menu ${menu.code}: SYSTEM-ONLY (menu code) - filtered out for contextType=${contextType}`);
+          this.logger.debug(`Menu ${menu.code}: SYSTEM-ONLY (menu code) - filtered out`);
           return false;
         }
         
@@ -309,11 +400,13 @@ export class MenuService extends CrudService<Menu> {
       });
     }
 
-    this.logger.debug(`Filtered ${filteredMenus.length} menus from ${menus.length} total menus for user ${userId} in groupId ${groupId}, contextType=${contextType}`);
-    const filteredMenuCodes = filteredMenus.map(m => m.code).join(', ');
-    this.logger.debug(`Filtered menu codes: [${filteredMenuCodes}]`);
+    this.logger.debug(`Filtered ${filteredMenus.length} menus from ${menus.length} total menus`);
 
-    const tree = this.buildTree(filteredMenus);
+    const tree = this.buildTree(filteredMenus.map(m => ({
+      ...m,
+      id: Number(m.id),
+      parent_id: m.parent_id ? Number(m.parent_id) : null,
+    })));
     this.logger.debug(`Built tree with ${tree.length} root items`);
     return flatten ? this.flattenTree(tree) : tree;
   }
@@ -321,7 +414,7 @@ export class MenuService extends CrudService<Menu> {
   /**
    * Build tree structure from flat menu list
    */
-  private buildTree(menus: Menu[]): MenuTreeItem[] {
+  private buildTree(menus: any[]): MenuTreeItem[] {
     const menuMap = new Map<number, MenuTreeItem>();
     const rootMenus: MenuTreeItem[] = [];
 
@@ -375,5 +468,15 @@ export class MenuService extends CrudService<Menu> {
     traverse(tree);
     return result;
   }
-}
 
+  /**
+   * Parse sort string to Prisma orderBy
+   */
+  private parseSort(sort: string | string[]): Prisma.MenuOrderByWithRelationInput[] {
+    const sorts = Array.isArray(sort) ? sort : [sort];
+    return sorts.map(s => {
+      const [field, direction] = s.split(':');
+      return { [field]: direction?.toLowerCase() === 'desc' ? 'desc' : 'asc' } as Prisma.MenuOrderByWithRelationInput;
+    });
+  }
+}

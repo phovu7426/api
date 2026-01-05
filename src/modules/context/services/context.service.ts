@@ -1,21 +1,14 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
 import { Request } from 'express';
-import { Context } from '@/shared/entities/context.entity';
-import { CrudService } from '@/common/base/services/crud.service';
 import { RbacService } from '@/modules/rbac/services/rbac.service';
 
 @Injectable()
-export class ContextService extends CrudService<Context> {
+export class ContextService {
   constructor(
-    @InjectRepository(Context)
-    private readonly contextRepo: Repository<Context>,
-    @Inject(forwardRef(() => RbacService))
+    private readonly prisma: PrismaService,
     private readonly rbacService: RbacService,
-  ) {
-    super(contextRepo);
-  }
+  ) {}
 
   /**
    * Kiểm tra user có phải system admin không
@@ -33,7 +26,7 @@ export class ContextService extends CrudService<Context> {
    * - Query: ?context_id=1
    * Lưu ý: Phải có context_id trong header hoặc query, không có default
    */
-  async resolveContext(req: Request): Promise<Context> {
+  async resolveContext(req: Request): Promise<any> {
     const contextId =
       req.headers['x-context-id'] ||
       (req.query as any).context_id;
@@ -42,29 +35,53 @@ export class ContextService extends CrudService<Context> {
       throw new NotFoundException('Context ID is required in header (X-Context-Id) or query (?context_id)');
     }
 
-    const context = await this.contextRepo.findOne({
-      where: { id: Number(contextId), status: 'active' },
+    const context = await this.prisma.context.findFirst({
+      where: { 
+        id: BigInt(Number(contextId)), 
+        status: 'active',
+        deleted_at: null,
+      },
     });
 
     if (!context) {
       throw new NotFoundException('Context not found');
     }
 
-    return context;
+    return {
+      ...context,
+      id: Number(context.id),
+      ref_id: context.ref_id ? Number(context.ref_id) : null,
+    };
   }
 
   /**
-   * ✅ MỚI: Lấy tất cả contexts mà user có quyền truy cập (thông qua groups)
+   * Lấy tất cả contexts mà user có quyền truy cập (thông qua groups)
    */
-  async getUserContexts(userId: number): Promise<Context[]> {
-    return this.contextRepo
-      .createQueryBuilder('context')
-      .innerJoin('context.groups', 'group')
-      .innerJoin('group.user_groups', 'ug', 'ug.user_id = :userId', { userId })
-      .where('context.status = :status', { status: 'active' })
-      .andWhere('group.status = :groupStatus', { groupStatus: 'active' })
-      .distinct(true)
-      .getMany();
+  async getUserContexts(userId: number): Promise<any[]> {
+    const contexts = await this.prisma.context.findMany({
+      where: {
+        status: 'active',
+        deleted_at: null,
+        groups: {
+          some: {
+            status: 'active',
+            deleted_at: null,
+            user_groups: {
+              some: {
+                user_id: BigInt(userId),
+              },
+            },
+          },
+        },
+      },
+      distinct: ['id'],
+    });
+
+    return contexts.map(ctx => ({
+      ...ctx,
+      id: Number(ctx.id),
+      ref_id: ctx.ref_id ? Number(ctx.ref_id) : null,
+    }));
   }
 
   /**
@@ -72,27 +89,29 @@ export class ContextService extends CrudService<Context> {
    * - System context (id=1) luôn được phép cho mọi user đã authenticated
    * - Các contexts khác chỉ được phép nếu user có role trong đó
    */
-  async getUserContextsForTransfer(userId: number): Promise<Context[]> {
+  async getUserContextsForTransfer(userId: number): Promise<any[]> {
     // Lấy system context (id=1) - luôn được phép
-    const systemContext = await this.contextRepo
-      .createQueryBuilder('context')
-      .where('context.id = :id', { id: 1 })
-      .andWhere('context.status = :status', { status: 'active' })
-      .getOne();
+    const systemContext = await this.prisma.context.findUnique({
+      where: { id: BigInt(1) },
+    });
 
     // Lấy các contexts mà user có quyền truy cập (có role)
     const userContexts = await this.getUserContexts(userId);
 
-    // Gộp lại và loại bỏ trùng lặp (nếu system context đã có trong userContexts)
-    const allContexts: Context[] = [];
-    if (systemContext) {
-      allContexts.push(systemContext);
+    // Gộp lại và loại bỏ trùng lặp
+    const allContexts: any[] = [];
+    if (systemContext && systemContext.status === 'active' && !systemContext.deleted_at) {
+      allContexts.push({
+        ...systemContext,
+        id: Number(systemContext.id),
+        ref_id: systemContext.ref_id ? Number(systemContext.ref_id) : null,
+      });
     }
     allContexts.push(...userContexts);
     
     // Loại bỏ trùng lặp dựa trên ID
     const uniqueContexts = allContexts.filter(
-      (ctx, index, self) => index === self.findIndex((c) => Number(c.id) === Number(ctx.id)),
+      (ctx, index, self) => index === self.findIndex((c) => c.id === ctx.id),
     );
 
     return uniqueContexts;
@@ -101,49 +120,80 @@ export class ContextService extends CrudService<Context> {
   /**
    * Tạo system context mặc định (chạy 1 lần khi setup)
    */
-  async createSystemContext(): Promise<Context> {
-    const exists = await this.contextRepo
-      .createQueryBuilder('context')
-      .where('context.type = :type', { type: 'system' })
-      .andWhere('context.ref_id IS NULL')
-      .getOne();
-
-    if (exists) return exists;
-
-    const context = this.contextRepo.create({
-      type: 'system',
-      ref_id: null,
-      name: 'System',
-      status: 'active',
+  async createSystemContext(): Promise<any> {
+    const exists = await this.prisma.context.findFirst({
+      where: {
+        type: 'system',
+        ref_id: null,
+        deleted_at: null,
+      },
     });
 
-    return this.contextRepo.save(context);
+    if (exists) {
+      return {
+        ...exists,
+        id: Number(exists.id),
+        ref_id: exists.ref_id ? Number(exists.ref_id) : null,
+      };
+    }
+
+    const context = await this.prisma.context.create({
+      data: {
+        type: 'system',
+        ref_id: null,
+        name: 'System',
+        code: 'system',
+        status: 'active',
+      },
+    });
+
+    return {
+      ...context,
+      id: Number(context.id),
+      ref_id: context.ref_id ? Number(context.ref_id) : null,
+    };
   }
 
   /**
    * Lấy context theo ID
    */
-  async findById(id: number): Promise<Context | null> {
-    return this.contextRepo.findOne({
-      where: { id, status: 'active' },
+  async findById(id: number): Promise<any | null> {
+    const context = await this.prisma.context.findUnique({
+      where: { id: BigInt(id) },
     });
+
+    if (!context || context.status !== 'active' || context.deleted_at) {
+      return null;
+    }
+
+    return {
+      ...context,
+      id: Number(context.id),
+      ref_id: context.ref_id ? Number(context.ref_id) : null,
+    };
   }
 
   /**
    * Lấy context theo type và ref_id
    */
-  async findByTypeAndRefId(type: string, refId: number | null): Promise<Context | null> {
-    const queryBuilder = this.contextRepo
-      .createQueryBuilder('context')
-      .where('context.type = :type', { type });
+  async findByTypeAndRefId(type: string, refId: number | null): Promise<any | null> {
+    const context = await this.prisma.context.findFirst({
+      where: {
+        type,
+        ref_id: refId === null ? null : BigInt(refId),
+        deleted_at: null,
+      },
+    });
 
-    if (refId === null) {
-      queryBuilder.andWhere('context.ref_id IS NULL');
-    } else {
-      queryBuilder.andWhere('context.ref_id = :refId', { refId });
+    if (!context) {
+      return null;
     }
 
-    return queryBuilder.getOne();
+    return {
+      ...context,
+      id: Number(context.id),
+      ref_id: context.ref_id ? Number(context.ref_id) : null,
+    };
   }
 
   /**
@@ -158,7 +208,7 @@ export class ContextService extends CrudService<Context> {
       status?: string;
     },
     requesterUserId: number,
-  ): Promise<Context> {
+  ): Promise<any> {
     // Check system admin
     const isAdmin = await this.isSystemAdmin(requesterUserId);
     if (!isAdmin) {
@@ -175,22 +225,30 @@ export class ContextService extends CrudService<Context> {
     const code = data.code || `${data.type}-${data.ref_id ?? 'system'}`;
 
     // Check code unique
-    const existingByCode = await this.contextRepo.findOne({
-      where: { code } as any,
+    const existingByCode = await this.prisma.context.findFirst({
+      where: { code, deleted_at: null },
     });
     if (existingByCode) {
       throw new BadRequestException(`Context with code "${code}" already exists`);
     }
 
-    const context = this.contextRepo.create({
-      type: data.type,
-      ref_id: data.ref_id ?? null,
-      name: data.name,
-      code,
-      status: data.status || 'active',
+    const context = await this.prisma.context.create({
+      data: {
+        type: data.type,
+        ref_id: data.ref_id ? BigInt(data.ref_id) : null,
+        name: data.name,
+        code,
+        status: data.status || 'active',
+        created_user_id: requesterUserId ? BigInt(requesterUserId) : null,
+        updated_user_id: requesterUserId ? BigInt(requesterUserId) : null,
+      },
     });
 
-    return this.contextRepo.save(context);
+    return {
+      ...context,
+      id: Number(context.id),
+      ref_id: context.ref_id ? Number(context.ref_id) : null,
+    };
   }
 
   /**
@@ -200,7 +258,7 @@ export class ContextService extends CrudService<Context> {
     id: number,
     data: Partial<{ name: string; code: string; status: string }>,
     requesterUserId: number,
-  ): Promise<Context> {
+  ): Promise<any> {
     // Check system admin
     const isAdmin = await this.isSystemAdmin(requesterUserId);
     if (!isAdmin) {
@@ -219,16 +277,29 @@ export class ContextService extends CrudService<Context> {
 
     // Check code unique nếu có thay đổi code
     if (data.code && data.code !== context.code) {
-      const existing = await this.contextRepo.findOne({
-        where: { code: data.code } as any,
+      const existing = await this.prisma.context.findFirst({
+        where: { code: data.code, deleted_at: null },
       });
       if (existing) {
         throw new BadRequestException(`Context with code "${data.code}" already exists`);
       }
     }
 
-    Object.assign(context, data);
-    return this.contextRepo.save(context);
+    const updated = await this.prisma.context.update({
+      where: { id: BigInt(id) },
+      data: {
+        ...(data.name !== undefined && { name: data.name }),
+        ...(data.code !== undefined && { code: data.code }),
+        ...(data.status !== undefined && { status: data.status }),
+        updated_user_id: requesterUserId ? BigInt(requesterUserId) : null,
+      },
+    });
+
+    return {
+      ...updated,
+      id: Number(updated.id),
+      ref_id: updated.ref_id ? Number(updated.ref_id) : null,
+    };
   }
 
   /**
@@ -246,16 +317,18 @@ export class ContextService extends CrudService<Context> {
     }
 
     // Check xem có groups nào đang dùng context này không
-    const groupsCount = await this.contextRepo.manager
-      .getRepository('Group')
-      .count({ where: { context_id: id } } as any);
+    const groupsCount = await this.prisma.group.count({
+      where: { context_id: BigInt(id), deleted_at: null },
+    });
 
     if (groupsCount > 0) {
       throw new BadRequestException(`Cannot delete context: ${groupsCount} group(s) are using this context`);
     }
 
     // Soft delete
-    await this.contextRepo.softDelete(id);
+    await this.prisma.context.update({
+      where: { id: BigInt(id) },
+      data: { deleted_at: new Date() },
+    });
   }
 }
-

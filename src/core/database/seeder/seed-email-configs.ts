@@ -1,25 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
 import * as bcrypt from 'bcryptjs';
-import { EmailConfig } from '@/shared/entities/email-config.entity';
-import { User } from '@/shared/entities/user.entity';
 
 @Injectable()
 export class SeedEmailConfigs {
   private readonly logger = new Logger(SeedEmailConfigs.name);
 
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async seed(): Promise<void> {
     this.logger.log('Seeding email configs...');
 
-    const emailConfigRepository = this.dataSource.getRepository(EmailConfig);
-    const userRepo = this.dataSource.getRepository(User);
-
     // Check if email config already exist
-    const existing = await emailConfigRepository.findOne({
-      where: {} as any,
-      order: { id: 'ASC' },
+    const existing = await this.prisma.emailConfig.findFirst({
+      orderBy: { id: 'asc' },
     });
 
     if (existing) {
@@ -28,31 +22,35 @@ export class SeedEmailConfigs {
     }
 
     // Get admin user for audit fields
-    const adminUser = await userRepo.findOne({ where: { username: 'admin' } as any });
-    const defaultUserId = adminUser?.id ?? 1;
+    const adminUser = await this.prisma.user.findFirst({
+      where: { username: 'admin', deleted_at: null },
+    });
+    const defaultUserId = adminUser ? Number(adminUser.id) : 1;
 
     // Hash default password
     const defaultPassword = await bcrypt.hash('default_password', 10);
 
-    const emailConfig = emailConfigRepository.create({
-      smtp_host: 'smtp.gmail.com',
-      smtp_port: 587,
-      smtp_secure: true,
-      smtp_username: 'your-email@gmail.com',
-      smtp_password: defaultPassword,
-      from_email: 'noreply@example.com',
-      from_name: 'My Website',
-      reply_to_email: 'contact@example.com',
-      created_user_id: defaultUserId,
-      updated_user_id: defaultUserId,
+    await this.prisma.emailConfig.create({
+      data: {
+        smtp_host: 'smtp.gmail.com',
+        smtp_port: 587,
+        smtp_secure: true,
+        smtp_username: 'your-email@gmail.com',
+        smtp_password: defaultPassword,
+        from_email: 'noreply@example.com',
+        from_name: 'My Website',
+        reply_to_email: 'contact@example.com',
+        created_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+        updated_user_id: defaultUserId ? BigInt(defaultUserId) : null,
+      },
     });
 
-    await emailConfigRepository.save(emailConfig);
     this.logger.log('Email config seeding completed.');
   }
 
   async clear(): Promise<void> {
     this.logger.log('Clearing email configs...');
-    await this.dataSource.getRepository(EmailConfig).clear();
+    await this.prisma.emailConfig.deleteMany({});
+    this.logger.log('Email configs cleared');
   }
 }

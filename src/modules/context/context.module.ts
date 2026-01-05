@@ -1,9 +1,4 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { Context } from '@/shared/entities/context.entity';
-import { Group } from '@/shared/entities/group.entity';
-import { User } from '@/shared/entities/user.entity';
-import { Role } from '@/shared/entities/role.entity';
 import { RbacModule } from '@/modules/rbac/rbac.module';
 
 // Import admin modules
@@ -16,7 +11,6 @@ import { UserGroupModule } from '@/modules/context/user/group/group.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Context, Group, User, Role]),
     RbacModule,
     // Admin modules
     AdminContextModule,
@@ -25,7 +19,7 @@ import { UserGroupModule } from '@/modules/context/user/group/group.module';
     UserContextModule,
     UserGroupModule,
   ],
-  exports: [TypeOrmModule, AdminContextModule, AdminGroupModule, UserContextModule, UserGroupModule],
+  exports: [AdminContextModule, AdminGroupModule, UserContextModule, UserGroupModule],
 })
 export class ContextModule {}
 

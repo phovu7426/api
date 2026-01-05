@@ -1,46 +1,37 @@
+import { PostType as PrismaPostType } from '@prisma/client';
+
 /**
  * Post Type Enum
  * 
  * Định nghĩa các loại bài viết trong hệ thống
  */
-export enum PostType {
-  /** Bài viết dạng text thông thường */
-  TEXT = 'text',
-  
-  /** Bài viết dạng video */
-  VIDEO = 'video',
-  
-  /** Bài viết dạng hình ảnh (gallery) */
-  IMAGE = 'image',
-  
-  /** Bài viết dạng audio */
-  AUDIO = 'audio',
-}
+// Re-export Prisma enum
+export { PostType } from '@prisma/client';
 
 /**
  * Labels cho PostType
  */
-export const PostTypeLabels: Record<PostType, string> = {
-  [PostType.TEXT]: 'Văn bản',
-  [PostType.VIDEO]: 'Video',
-  [PostType.IMAGE]: 'Hình ảnh',
-  [PostType.AUDIO]: 'Âm thanh',
+export const PostTypeLabels: Record<PrismaPostType, string> = {
+  text: 'Văn bản',
+  video: 'Video',
+  image: 'Hình ảnh',
+  audio: 'Âm thanh',
 };
 
 /**
  * Các loại bài viết hỗ trợ media (video, image, audio)
  */
-export const MEDIA_POST_TYPES = [
-  PostType.VIDEO,
-  PostType.IMAGE,
-  PostType.AUDIO,
+export const MEDIA_POST_TYPES: PrismaPostType[] = [
+  'video',
+  'image',
+  'audio',
 ];
 
 /**
  * Các loại bài viết yêu cầu URL media
  */
-export const REQUIRES_MEDIA_URL_POST_TYPES = [
-  PostType.VIDEO,
-  PostType.AUDIO,
+export const REQUIRES_MEDIA_URL_POST_TYPES: PrismaPostType[] = [
+  'video',
+  'audio',
 ];
 

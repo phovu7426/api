@@ -6,17 +6,36 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Response, Request } from 'express';
-import { QueryFailedError } from 'typeorm';
 import { ResponseUtil } from '@/common/utils/response.util';
 
-@Catch(QueryFailedError)
+/**
+ * Catch both TypeORM QueryFailedError and Prisma errors
+ */
+@Catch()
 export class QueryFailedFilter implements ExceptionFilter {
   private readonly logger = new Logger(QueryFailedFilter.name);
 
-  catch(exception: QueryFailedError, host: ArgumentsHost) {
+  catch(exception: any, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
+
+    // Check if it's a database error (TypeORM or Prisma)
+    const isTypeOrmError = exception?.constructor?.name === 'QueryFailedError';
+    const isPrismaError = exception?.code && (
+      exception.code.startsWith('P') || // Prisma error codes start with P
+      exception.code === 'ER_DUP_ENTRY' || // MySQL duplicate entry
+      exception.code === 'ER_NO_REFERENCED_ROW_2' ||
+      exception.code === 'ER_ROW_IS_REFERENCED_2' ||
+      exception.code === 'ER_DATA_TOO_LONG' ||
+      exception.code === 'ER_BAD_NULL_ERROR' ||
+      exception.code === 'ER_NO_DEFAULT_FOR_FIELD'
+    );
+
+    if (!isTypeOrmError && !isPrismaError) {
+      // Not a database error, re-throw to let other filters handle it
+      throw exception;
+    }
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = 'Database query failed';
@@ -24,16 +43,18 @@ export class QueryFailedFilter implements ExceptionFilter {
 
     // Handle specific database errors
     const error = exception as any;
-    const code = error.code || error.errno;
+    const code = error.code || error.errno || error.meta?.code;
 
     switch (code) {
+      case 'P2002': // Prisma unique constraint violation
       case 'ER_DUP_ENTRY':
       case '23000':
         status = HttpStatus.CONFLICT;
         message = 'Duplicate entry detected';
-        errors = this.extractDuplicateKeyInfo(error.message);
+        errors = this.extractDuplicateKeyInfo(error.message || error.meta?.target);
         break;
         
+      case 'P2003': // Prisma foreign key constraint violation
       case 'ER_NO_REFERENCED_ROW_2':
       case '23503':
         status = HttpStatus.BAD_REQUEST;
@@ -61,11 +82,13 @@ export class QueryFailedFilter implements ExceptionFilter {
         break;
         
       case 'ECONNREFUSED':
+      case 'P1001': // Prisma connection error
         status = HttpStatus.SERVICE_UNAVAILABLE;
         message = 'Database connection failed';
         break;
         
       case 'ER_ACCESS_DENIED_ERROR':
+      case 'P1000': // Prisma authentication error
         status = HttpStatus.SERVICE_UNAVAILABLE;
         message = 'Database access denied';
         break;
@@ -76,9 +99,9 @@ export class QueryFailedFilter implements ExceptionFilter {
           'Unknown database error:',
           JSON.stringify({
             code,
-            message: error.message,
+            message: error.message || error.meta?.message,
             sql: error.sql,
-            parameters: error.parameters,
+            parameters: error.parameters || error.meta?.cause,
           }),
           (error && error.stack) || undefined,
         );
@@ -87,7 +110,7 @@ export class QueryFailedFilter implements ExceptionFilter {
 
     // Log the database error (avoid leaking sensitive parameters in production)
     const isProd = (process.env.NODE_ENV || '').toLowerCase() === 'production';
-    const safeParams = isProd ? this.sanitizeDbParams(error.parameters) : error.parameters;
+    const safeParams = isProd ? this.sanitizeDbParams(error.parameters || error.meta?.cause) : (error.parameters || error.meta?.cause);
 
     this.logger.error(
       `Database Error: ${code} - ${message}`,
@@ -96,7 +119,7 @@ export class QueryFailedFilter implements ExceptionFilter {
         method: request.method,
         sql: error.sql,
         parameters: safeParams,
-        driverError: isProd ? undefined : error.driverError,
+        driverError: isProd ? undefined : (error.driverError || error.meta),
         timestamp: new Date().toISOString(),
       }),
       (error && error.stack) || undefined,
@@ -108,9 +131,17 @@ export class QueryFailedFilter implements ExceptionFilter {
     response.status(status).json(errorResponse);
   }
 
-  private extractDuplicateKeyInfo(message: string): any {
-    // Extract information from MySQL duplicate key error message
-    // Example: "Duplicate entry 'test@example.com' for key 'users.email'"
+  private extractDuplicateKeyInfo(messageOrTarget: string | string[]): any {
+    // Handle Prisma error (target is array of field names)
+    if (Array.isArray(messageOrTarget)) {
+      return {
+        fields: messageOrTarget,
+        message: `Duplicate entry detected for fields: ${messageOrTarget.join(', ')}`,
+      };
+    }
+
+    // Handle TypeORM/MySQL error message
+    const message = messageOrTarget || '';
     const match = message.match(/Duplicate entry '(.+)' for key '(.+)'/);
     
     if (match) {

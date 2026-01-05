@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { GeneralConfig } from '@/shared/entities/general-config.entity';
+import { Prisma } from '@prisma/client';
 import { CacheService } from '@/common/services/cache.service';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
+
+type GeneralConfig = Prisma.GeneralConfigGetPayload<{}>;
 
 @Injectable()
 export class PublicGeneralConfigService {
@@ -10,8 +11,7 @@ export class PublicGeneralConfigService {
   private readonly CACHE_TTL = 3600; // 1 hour
 
   constructor(
-    @InjectRepository(GeneralConfig)
-    private readonly generalConfigRepository: Repository<GeneralConfig>,
+    private readonly prisma: PrismaService,
     private readonly cacheService: CacheService,
   ) {}
 
@@ -23,15 +23,15 @@ export class PublicGeneralConfigService {
     return this.cacheService.getOrSet<GeneralConfig>(
       this.CACHE_KEY,
       async () => {
-        const config = await this.generalConfigRepository.findOne({
-          where: {} as any,
-          order: { id: 'ASC' },
+        const prisma = this.prisma as any;
+        const config = await prisma.generalConfig.findFirst({
+          orderBy: { id: 'asc' },
         });
 
         if (!config) {
           // Trả về config mặc định nếu chưa có
           return {
-            id: 0,
+            id: BigInt(0),
             site_name: 'My Website',
             site_description: null,
             site_logo: null,
@@ -44,6 +44,17 @@ export class PublicGeneralConfigService {
             locale: 'vi',
             currency: 'VND',
             contact_channels: null,
+            meta_title: null,
+            meta_keywords: null,
+            meta_description: null,
+            og_title: null,
+            og_description: null,
+            og_image: null,
+            canonical_url: null,
+            google_analytics_id: null,
+            google_search_console: null,
+            facebook_pixel_id: null,
+            twitter_site: null,
             created_user_id: null,
             updated_user_id: null,
             created_at: new Date(),

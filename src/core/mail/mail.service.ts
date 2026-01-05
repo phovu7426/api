@@ -1,9 +1,7 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
 import * as nodemailer from 'nodemailer';
 import { Transporter } from 'nodemailer';
-import { EmailConfig } from '@/shared/entities/email-config.entity';
 import { CacheService } from '@/common/services/cache.service';
 
 export interface SendMailOptions {
@@ -34,25 +32,23 @@ export class MailService {
   private readonly CACHE_KEY = 'mail:active-config';
   private readonly CACHE_TTL = 600; // 10 minutes
   private transporterCache: Transporter | null = null;
-  private configCache: EmailConfig | null = null;
+  private configCache: any | null = null;
 
   constructor(
-    @InjectRepository(EmailConfig)
-    private readonly emailConfigRepository: Repository<EmailConfig>,
+    private readonly prisma: PrismaService,
     private readonly cacheService: CacheService,
   ) {}
 
-  private async getActiveConfig(): Promise<EmailConfig> {
+  private async getActiveConfig(): Promise<any> {
     if (this.configCache) {
       return this.configCache;
     }
 
-    const config = await this.cacheService.getOrSet<EmailConfig>(
+    const config = await this.cacheService.getOrSet<any>(
       this.CACHE_KEY,
       async () => {
-        const configData = await this.emailConfigRepository.findOne({
-          where: {} as any,
-          order: { id: 'ASC' },
+        const configData = await this.prisma.emailConfig.findFirst({
+          orderBy: { id: 'asc' },
         });
 
         if (!configData) {
@@ -100,101 +96,55 @@ export class MailService {
     this.transporterCache = null;
   }
 
-  async send(options: SendMailOptions): Promise<void> {
-    if (!options.html && !options.text) {
-      throw new InternalServerErrorException('Either html or text content must be provided when sending email.');
-    }
-
-    const config = await this.getActiveConfig();
+  /**
+   * Gửi email đơn lẻ
+   */
+  async sendMail(options: SendMailOptions): Promise<void> {
     const transporter = await this.getTransporter();
+    const config = await this.getActiveConfig();
 
     await transporter.sendMail({
       from: `"${config.from_name}" <${config.from_email}>`,
-      to: options.to,
+      to: Array.isArray(options.to) ? options.to.join(', ') : options.to,
       subject: options.subject,
       html: options.html,
       text: options.text,
-      cc: options.cc,
-      bcc: options.bcc,
-      replyTo: config.reply_to_email || undefined,
+      cc: options.cc ? (Array.isArray(options.cc) ? options.cc.join(', ') : options.cc) : undefined,
+      bcc: options.bcc ? (Array.isArray(options.bcc) ? options.bcc.join(', ') : options.bcc) : undefined,
+      replyTo: config.reply_to_email || config.from_email,
     });
   }
 
   /**
-   * Gửi nhiều email cùng lúc
-   * - Gửi ngầm (background): dùng parallel=true để gửi số lượng lớn
-   * - Gửi trực tiếp (synchronous): số lượng ít, có thể dùng parallel=false để gửi tuần tự
-   * @param options - Bulk mail options với danh sách emails và chế độ gửi
-   * @returns Promise với kết quả gửi email (success count, failed count, errors)
+   * Gửi nhiều email cùng lúc (bulk)
+   * @param options - Options chứa mảng emails và flag parallel
    */
-  async sendBulk(options: BulkMailOptions): Promise<{
-    success: number;
-    failed: number;
-    errors: Array<{ index: number; email: string; error: string }>;
-  }> {
-    if (!options.emails || options.emails.length === 0) {
-      throw new InternalServerErrorException('Email list cannot be empty.');
-    }
-
-    // Validate tất cả emails trước
-    for (let i = 0; i < options.emails.length; i++) {
-      const email = options.emails[i];
-      if (!email.html && !email.text) {
-        throw new InternalServerErrorException(`Email at index ${i} must have either html or text content.`);
-      }
-    }
-
-    const config = await this.getActiveConfig();
+  async sendBulkMail(options: BulkMailOptions): Promise<void> {
     const transporter = await this.getTransporter();
-    const parallel = options.parallel !== false; // Mặc định là true
+    const config = await this.getActiveConfig();
+    const parallel = options.parallel !== false; // Mặc định true
 
-    const errors: Array<{ index: number; email: string; error: string }> = [];
-    let success = 0;
-    let failed = 0;
-
-    const sendEmail = async (
-      emailOptions: BulkMailItem,
-      index: number,
-    ): Promise<void> => {
-      try {
-        await transporter.sendMail({
-          from: `"${config.from_name}" <${config.from_email}>`,
-          to: emailOptions.to,
-          subject: emailOptions.subject,
-          html: emailOptions.html,
-          text: emailOptions.text,
-          cc: emailOptions.cc,
-          bcc: emailOptions.bcc,
-          replyTo: config.reply_to_email || undefined,
-        });
-
-        success++;
-      } catch (error) {
-        failed++;
-        const toStr = Array.isArray(emailOptions.to)
-          ? emailOptions.to.join(', ')
-          : emailOptions.to;
-        errors.push({
-          index,
-          email: toStr,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    };
+    const sendPromises = options.emails.map((email) => {
+      return transporter.sendMail({
+        from: `"${config.from_name}" <${config.from_email}>`,
+        to: Array.isArray(email.to) ? email.to.join(', ') : email.to,
+        subject: email.subject,
+        html: email.html,
+        text: email.text,
+        cc: email.cc ? (Array.isArray(email.cc) ? email.cc.join(', ') : email.cc) : undefined,
+        bcc: email.bcc ? (Array.isArray(email.bcc) ? email.bcc.join(', ') : email.bcc) : undefined,
+        replyTo: config.reply_to_email || config.from_email,
+      });
+    });
 
     if (parallel) {
-      // Gửi song song tất cả cùng lúc (dùng cho gửi ngầm số lượng lớn)
-      await Promise.allSettled(
-        options.emails.map((email, index) => sendEmail(email, index)),
-      );
+      // Gửi song song
+      await Promise.all(sendPromises);
     } else {
-      // Gửi tuần tự (dùng cho gửi trực tiếp số lượng ít)
-      for (let i = 0; i < options.emails.length; i++) {
-        await sendEmail(options.emails[i], i);
+      // Gửi tuần tự
+      for (const promise of sendPromises) {
+        await promise;
       }
     }
-
-    return { success, failed, errors };
   }
 }
-

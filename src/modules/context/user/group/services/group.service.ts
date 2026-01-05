@@ -1,26 +1,12 @@
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
-import { Group } from '@/shared/entities/group.entity';
-import { Context } from '@/shared/entities/context.entity';
-import { UserGroup } from '@/shared/entities/user-group.entity';
-import { UserRoleAssignment } from '@/shared/entities/user-role-assignment.entity';
-import { User } from '@/shared/entities/user.entity';
-import { Role } from '@/shared/entities/role.entity';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
 import { RbacService } from '@/modules/rbac/services/rbac.service';
 import { RbacCacheService } from '@/modules/rbac/services/rbac-cache.service';
 
 @Injectable()
 export class UserGroupService {
   constructor(
-    @InjectRepository(Group)
-    private readonly groupRepo: Repository<Group>,
-    @InjectRepository(Context)
-    private readonly contextRepo: Repository<Context>,
-    @InjectRepository(User)
-    private readonly userRepo: Repository<User>,
-    @InjectRepository(Role)
-    private readonly roleRepo: Repository<Role>,
+    private readonly prisma: PrismaService,
     private readonly rbacService: RbacService,
     private readonly rbacCache: RbacCacheService,
   ) {}
@@ -29,24 +15,24 @@ export class UserGroupService {
    * Kiểm tra user có phải owner của group không
    */
   async isOwner(groupId: number, userId: number): Promise<boolean> {
-    const group = await this.groupRepo.findOne({
-      where: { id: groupId, status: 'active' },
+    const group = await this.prisma.group.findFirst({
+      where: { id: BigInt(groupId), status: 'active', deleted_at: null },
     });
     if (!group) return false;
-    return group.owner_id === userId;
+    return group.owner_id ? Number(group.owner_id) === userId : false;
   }
 
   /**
    * Kiểm tra user có quyền quản lý group không (owner hoặc có permission group.manage)
    */
   async canManageGroup(groupId: number, userId: number): Promise<boolean> {
-    const group = await this.groupRepo.findOne({
-      where: { id: groupId, status: 'active' },
+    const group = await this.prisma.group.findFirst({
+      where: { id: BigInt(groupId), status: 'active', deleted_at: null },
     });
     if (!group) return false;
 
     // Owner luôn có quyền
-    if (group.owner_id === userId) return true;
+    if (group.owner_id && Number(group.owner_id) === userId) return true;
 
     // Check permission trong group trực tiếp
     return this.rbacService.userHasPermissionsInGroup(userId, groupId, [
@@ -59,12 +45,20 @@ export class UserGroupService {
   /**
    * Lấy context của group
    */
-  async getGroupContext(groupId: number): Promise<Context | null> {
-    const group = await this.groupRepo.findOne({
-      where: { id: groupId, status: 'active' },
-      relations: ['context'],
+  async getGroupContext(groupId: number): Promise<any | null> {
+    const group = await this.prisma.group.findFirst({
+      where: { id: BigInt(groupId), status: 'active', deleted_at: null },
+      include: {
+        context: true,
+      },
     });
-    return group?.context || null;
+    if (!group || !group.context) return null;
+    
+    return {
+      ...group.context,
+      id: Number(group.context.id),
+      ref_id: group.context.ref_id ? Number(group.context.ref_id) : null,
+    };
   }
 
   /**
@@ -82,45 +76,49 @@ export class UserGroupService {
       throw new ForbiddenException('You do not have permission to add members to this group');
     }
 
-    const group = await this.groupRepo.findOne({
-      where: { id: groupId, status: 'active' },
+    const group = await this.prisma.group.findFirst({
+      where: { id: BigInt(groupId), status: 'active', deleted_at: null },
     });
     if (!group) {
       throw new NotFoundException('Group not found');
     }
 
-    const member = await this.userRepo.findOne({ where: { id: memberUserId } });
+    const member = await this.prisma.user.findUnique({ where: { id: BigInt(memberUserId) } });
     if (!member) {
       throw new NotFoundException('Member user not found');
     }
 
     // Thêm user vào user_groups (nếu chưa có)
-    const userGroupRepo = this.groupRepo.manager.getRepository(UserGroup);
-    const existingUserGroup = await userGroupRepo.findOne({
-      where: { user_id: memberUserId, group_id: groupId },
+    const existingUserGroup = await this.prisma.userGroup.findFirst({
+      where: { user_id: BigInt(memberUserId), group_id: BigInt(groupId) },
     });
 
     if (!existingUserGroup) {
-      await userGroupRepo.save({
-        user_id: memberUserId,
-        group_id: groupId,
-        joined_at: new Date(),
+      await this.prisma.userGroup.create({
+        data: {
+          user_id: BigInt(memberUserId),
+          group_id: BigInt(groupId),
+          joined_at: new Date(),
+        },
       });
     }
 
     // Gán roles qua user_role_assignments
     if (roleIds.length > 0) {
       // Validate roles
-      const roles = await this.roleRepo.findBy({ id: In(roleIds) });
+      const roles = await this.prisma.role.findMany({
+        where: { id: { in: roleIds.map(id => BigInt(id)) } },
+      });
       if (roles.length !== roleIds.length) {
         throw new BadRequestException('Some role IDs are invalid');
       }
 
       // Xóa roles cũ trong group này
-      const userRoleAssignmentRepo = this.groupRepo.manager.getRepository(UserRoleAssignment);
-      await userRoleAssignmentRepo.delete({
-        user_id: memberUserId,
-        group_id: groupId,
+      await this.prisma.userRoleAssignment.deleteMany({
+        where: {
+          user_id: BigInt(memberUserId),
+          group_id: BigInt(groupId),
+        },
       });
 
       // Thêm roles mới
@@ -129,10 +127,11 @@ export class UserGroupService {
       }
     } else {
       // Nếu không có roles, xóa tất cả roles trong group
-      const userRoleAssignmentRepo = this.groupRepo.manager.getRepository(UserRoleAssignment);
-      await userRoleAssignmentRepo.delete({
-        user_id: memberUserId,
-        group_id: groupId,
+      await this.prisma.userRoleAssignment.deleteMany({
+        where: {
+          user_id: BigInt(memberUserId),
+          group_id: BigInt(groupId),
+        },
       });
     }
   }
@@ -153,9 +152,8 @@ export class UserGroupService {
     }
 
     // Đảm bảo user đã thuộc group
-    const userGroupRepo = this.groupRepo.manager.getRepository(UserGroup);
-    const existingUserGroup = await userGroupRepo.findOne({
-      where: { user_id: memberUserId, group_id: groupId },
+    const existingUserGroup = await this.prisma.userGroup.findFirst({
+      where: { user_id: BigInt(memberUserId), group_id: BigInt(groupId) },
     });
 
     if (!existingUserGroup) {
@@ -163,16 +161,19 @@ export class UserGroupService {
     }
 
     // Xóa roles cũ trong group
-    const userRoleAssignmentRepo = this.groupRepo.manager.getRepository(UserRoleAssignment);
-    await userRoleAssignmentRepo.delete({
-      user_id: memberUserId,
-      group_id: groupId,
+    await this.prisma.userRoleAssignment.deleteMany({
+      where: {
+        user_id: BigInt(memberUserId),
+        group_id: BigInt(groupId),
+      },
     });
 
     // Thêm roles mới
     if (roleIds.length > 0) {
       // Validate roles
-      const roles = await this.roleRepo.findBy({ id: In(roleIds) });
+      const roles = await this.prisma.role.findMany({
+        where: { id: { in: roleIds.map(id => BigInt(id)) } },
+      });
       if (roles.length !== roleIds.length) {
         throw new BadRequestException('Some role IDs are invalid');
       }
@@ -200,30 +201,32 @@ export class UserGroupService {
       throw new ForbiddenException('You do not have permission to remove members from this group');
     }
 
-    const group = await this.groupRepo.findOne({
-      where: { id: groupId, status: 'active' },
+    const group = await this.prisma.group.findFirst({
+      where: { id: BigInt(groupId), status: 'active', deleted_at: null },
     });
     if (!group) {
       throw new NotFoundException('Group not found');
     }
 
     // Không cho phép xóa owner
-    if (group.owner_id === memberUserId) {
+    if (group.owner_id && Number(group.owner_id) === memberUserId) {
       throw new BadRequestException('Cannot remove owner from group');
     }
 
     // Xóa user khỏi user_groups
-    const userGroupRepo = this.groupRepo.manager.getRepository(UserGroup);
-    await userGroupRepo.delete({
-      user_id: memberUserId,
-      group_id: groupId,
+    await this.prisma.userGroup.deleteMany({
+      where: {
+        user_id: BigInt(memberUserId),
+        group_id: BigInt(groupId),
+      },
     });
 
     // Xóa tất cả roles của user trong group
-    const userRoleAssignmentRepo = this.groupRepo.manager.getRepository(UserRoleAssignment);
-    await userRoleAssignmentRepo.delete({
-      user_id: memberUserId,
-      group_id: groupId,
+    await this.prisma.userRoleAssignment.deleteMany({
+      where: {
+        user_id: BigInt(memberUserId),
+        group_id: BigInt(groupId),
+      },
     });
 
     // Clear cache
@@ -234,24 +237,24 @@ export class UserGroupService {
    * Lấy danh sách members của group (từ user_groups và user_role_assignments)
    */
   async getGroupMembers(groupId: number): Promise<any[]> {
-    const userRoleAssignmentRepo = this.groupRepo.manager.getRepository(UserRoleAssignment);
-    const members = await userRoleAssignmentRepo
-      .createQueryBuilder('ura')
-      .leftJoinAndSelect('ura.user', 'user')
-      .leftJoinAndSelect('ura.role', 'role')
-      .where('ura.group_id = :groupId', { groupId })
-      .getMany();
+    const members = await this.prisma.userRoleAssignment.findMany({
+      where: { group_id: BigInt(groupId) },
+      include: {
+        user: true,
+        role: true,
+      },
+    });
 
-    return members.map((m: UserRoleAssignment) => ({
-      user_id: m.user_id,
+    return members.map(m => ({
+      user_id: Number(m.user_id),
       user: m.user ? {
-        id: m.user.id,
+        id: Number(m.user.id),
         username: m.user.username,
         email: m.user.email,
       } : null,
-      role_id: m.role_id,
+      role_id: Number(m.role_id),
       role: m.role ? {
-        id: m.role.id,
+        id: Number(m.role.id),
         code: m.role.code,
         name: m.role.name,
       } : null,
@@ -263,17 +266,20 @@ export class UserGroupService {
    * Kèm context info và roles của user trong mỗi group
    */
   async getUserGroups(userId: number): Promise<any[]> {
-    const userGroupRepo = this.groupRepo.manager.getRepository(UserGroup);
-    const userRoleAssignmentRepo = this.groupRepo.manager.getRepository(UserRoleAssignment);
-
     // Lấy tất cả groups mà user là member (từ user_groups)
-    const userGroups = await userGroupRepo.find({
-      where: { user_id: userId },
-      relations: ['group'],
-      order: { joined_at: 'DESC' },
+    const userGroups = await this.prisma.userGroup.findMany({
+      where: { user_id: BigInt(userId) },
+      include: {
+        group: {
+          include: {
+            context: true,
+          },
+        },
+      },
+      orderBy: { joined_at: 'desc' },
     });
 
-    // Xử lý từng group để lấy context và roles
+    // Xử lý từng group để lấy roles
     const result = await Promise.all(
       userGroups.map(async (ug) => {
         const group = ug.group;
@@ -284,40 +290,39 @@ export class UserGroupService {
         }
 
         // Chỉ lấy groups active
-        if (group.status !== 'active') {
+        if (group.status !== 'active' || group.deleted_at) {
           return null;
         }
 
-        // Lấy context của group
-        const context = await this.getGroupContext(group.id);
-
         // Lấy roles của user trong group này
-        const roleAssignments = await userRoleAssignmentRepo.find({
+        const roleAssignments = await this.prisma.userRoleAssignment.findMany({
           where: {
-            user_id: userId,
+            user_id: BigInt(userId),
             group_id: group.id,
           },
-          relations: ['role'],
+          include: {
+            role: true,
+          },
         });
 
         return {
-          id: group.id,
+          id: Number(group.id),
           code: group.code,
           name: group.name,
           type: group.type,
           description: group.description,
-          context: context
+          context: group.context
             ? {
-                id: context.id.toString(),
-                type: context.type,
-                ref_id: context.ref_id?.toString() || null,
-                name: context.name,
+                id: Number(group.context.id),
+                type: group.context.type,
+                ref_id: group.context.ref_id ? Number(group.context.ref_id) : null,
+                name: group.context.name,
               }
             : null,
           roles: roleAssignments
             .filter((ra) => ra.role) // Chỉ lấy roles hợp lệ
             .map((ra) => ({
-              id: ra.role!.id,
+              id: Number(ra.role!.id),
               code: ra.role!.code,
               name: ra.role!.name,
             })),
@@ -330,4 +335,3 @@ export class UserGroupService {
     return result.filter((item) => item !== null);
   }
 }
-

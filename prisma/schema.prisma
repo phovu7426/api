@@ -1,0 +1,609 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+///
+/// Enums
+///
+
+enum UserStatus {
+  active
+  pending
+  inactive
+}
+
+enum BasicStatus {
+  active
+  inactive
+}
+
+enum PostStatus {
+  draft
+  scheduled
+  published
+  archived
+}
+
+enum PostType {
+  text
+  video
+  image
+  audio
+}
+
+enum MenuType {
+  route
+  group
+  link
+}
+
+enum Gender {
+  male
+  female
+  other
+}
+
+enum ContactStatus {
+  pending
+  read
+  replied
+  closed
+}
+
+enum NotificationType {
+  info
+  success
+  warning
+  error
+  order_status
+  payment_status
+  promotion
+}
+
+enum BannerLinkTarget {
+  self
+  blank
+}
+
+///
+/// Base model fields (via @@map on each model)
+///
+
+model User {
+  id               BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?       @db.UnsignedBigInt
+  updated_user_id  BigInt?       @db.UnsignedBigInt
+  created_at       DateTime      @default(now()) @db.DateTime(0)
+  updated_at       DateTime      @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?     @db.DateTime(0)
+
+  username         String?       @db.VarChar(50)
+  email            String?       @db.VarChar(255)
+  phone            String?       @db.VarChar(20)
+  password         String?
+  status           UserStatus    @default(active)
+  email_verified_at DateTime?    @db.DateTime(0)
+  phone_verified_at DateTime?    @db.DateTime(0)
+  last_login_at    DateTime?     @db.DateTime(0)
+  remember_token   String?       @db.VarChar(100)
+
+  profile          Profile?
+  user_groups      UserGroup[]
+  user_role_assignments UserRoleAssignment[]
+  notifications    Notification[] @relation("NotificationUser")
+  created_notifications Notification[] @relation("NotificationCreatedBy")
+  updated_notifications Notification[] @relation("NotificationUpdatedBy")
+
+  @@map("users")
+  @@index([deleted_at], map: "idx_deleted_at")
+}
+
+model Profile {
+  id               BigInt     @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?    @db.UnsignedBigInt
+  updated_user_id  BigInt?    @db.UnsignedBigInt
+  created_at       DateTime   @default(now()) @db.DateTime(0)
+  updated_at       DateTime   @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?  @db.DateTime(0)
+
+  user_id          BigInt     @unique @db.UnsignedBigInt
+  name             String?    @db.VarChar(255)
+  image            String?    @db.VarChar(255)
+  birthday         DateTime?  @db.Date
+  gender           Gender?
+  address          String?    @db.Text
+  about            String?    @db.Text
+
+  user             User       @relation(fields: [user_id], references: [id])
+
+  @@map("profiles")
+  @@index([user_id], map: "UQ_profiles_user_id")
+}
+
+model Role {
+  id               BigInt          @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?         @db.UnsignedBigInt
+  updated_user_id  BigInt?         @db.UnsignedBigInt
+  created_at       DateTime        @default(now()) @db.DateTime(0)
+  updated_at       DateTime        @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?       @db.DateTime(0)
+
+  code             String          @db.VarChar(100)
+  name             String?         @db.VarChar(150)
+  status           String          @default("active") @db.VarChar(30)
+  parent_id        BigInt?         @db.BigInt
+
+  parent           Role?           @relation("RoleToParent", fields: [parent_id], references: [id])
+  children         Role[]          @relation("RoleToParent")
+  permissions      Permission[]    @relation("RolePermissions")
+  role_contexts    RoleContext[]
+  user_role_assignments UserRoleAssignment[]
+
+  @@map("roles")
+  @@unique([code])
+  @@index([deleted_at], map: "idx_deleted_at")
+}
+
+model Permission {
+  id               BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?       @db.UnsignedBigInt
+  updated_user_id  BigInt?       @db.UnsignedBigInt
+  created_at       DateTime      @default(now()) @db.DateTime(0)
+  updated_at       DateTime      @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?     @db.DateTime(0)
+
+  code             String        @db.VarChar(120)
+  scope            String        @default("context") @db.VarChar(30)
+  name             String?       @db.VarChar(150)
+  status           String        @default("active") @db.VarChar(30)
+  parent_id        BigInt?       @db.BigInt
+
+  parent           Permission?   @relation("PermissionToParent", fields: [parent_id], references: [id])
+  children         Permission[]  @relation("PermissionToParent")
+  roles            Role[]        @relation("RolePermissions")
+  menu_permissions MenuPermission[]
+  menus            Menu[]
+
+  @@map("permissions")
+  @@unique([code])
+  @@index([scope])
+  @@index([deleted_at], map: "idx_deleted_at")
+}
+
+model RoleContext {
+  role_id    BigInt @db.UnsignedBigInt
+  context_id BigInt @db.UnsignedBigInt
+
+  role    Role    @relation(fields: [role_id], references: [id])
+  context Context @relation(fields: [context_id], references: [id])
+
+  @@id([role_id, context_id])
+  @@map("role_contexts")
+  @@index([role_id])
+  @@index([context_id])
+}
+
+model Context {
+  id               BigInt     @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?    @db.UnsignedBigInt
+  updated_user_id  BigInt?    @db.UnsignedBigInt
+  created_at       DateTime   @default(now()) @db.DateTime(0)
+  updated_at       DateTime   @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?  @db.DateTime(0)
+
+  type             String     @db.VarChar(50)
+  ref_id           BigInt?    @db.UnsignedBigInt
+  name             String     @db.VarChar(255)
+  code             String     @db.VarChar(100)
+  status           String     @default("active") @db.VarChar(30)
+
+  groups           Group[]
+  roleContexts     RoleContext[]
+
+  @@map("contexts")
+  @@unique([type, ref_id])
+  @@index([deleted_at], map: "idx_deleted_at")
+}
+
+model Group {
+  id               BigInt             @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?            @db.UnsignedBigInt
+  updated_user_id  BigInt?            @db.UnsignedBigInt
+  created_at       DateTime           @default(now()) @db.DateTime(0)
+  updated_at       DateTime           @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?          @db.DateTime(0)
+
+  type             String             @db.VarChar(50)
+  code             String             @db.VarChar(100)
+  name             String             @db.VarChar(255)
+  description      String?            @db.Text
+  status           String             @default("active") @db.VarChar(30)
+  owner_id         BigInt?            @db.UnsignedBigInt
+  context_id       BigInt             @db.UnsignedBigInt
+  metadata         Json?
+
+  context          Context            @relation(fields: [context_id], references: [id])
+  user_groups      UserGroup[]
+  user_role_assignments UserRoleAssignment[]
+
+  @@map("groups")
+  @@unique([type, code])
+  @@index([deleted_at], map: "idx_deleted_at")
+  @@index([context_id], map: "IDX_groups_context_id")
+}
+
+model UserGroup {
+  user_id   BigInt   @db.UnsignedBigInt
+  group_id  BigInt   @db.UnsignedBigInt
+  joined_at DateTime @default(now()) @db.DateTime(0)
+
+  user  User  @relation(fields: [user_id], references: [id])
+  group Group @relation(fields: [group_id], references: [id])
+
+  @@id([user_id, group_id])
+  @@map("user_groups")
+  @@index([user_id])
+  @@index([group_id])
+}
+
+model UserRoleAssignment {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  user_id   BigInt   @db.UnsignedBigInt
+  role_id   BigInt   @db.UnsignedBigInt
+  group_id  BigInt   @db.UnsignedBigInt
+  created_at DateTime @default(now()) @db.DateTime(0)
+
+  user  User  @relation(fields: [user_id], references: [id])
+  role  Role  @relation(fields: [role_id], references: [id])
+  group Group @relation(fields: [group_id], references: [id])
+
+  @@map("user_role_assignments")
+  @@index([user_id, group_id])
+  @@index([group_id])
+  @@index([role_id])
+  @@unique([user_id, role_id, group_id])
+}
+
+model PostCategory {
+  id               BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?       @db.UnsignedBigInt
+  updated_user_id  BigInt?       @db.UnsignedBigInt
+  created_at       DateTime      @default(now()) @db.DateTime(0)
+  updated_at       DateTime      @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?     @db.DateTime(0)
+
+  name             String        @db.VarChar(255)
+  slug             String        @db.VarChar(255)
+  description      String?       @db.Text
+  parent_id        BigInt?       @db.UnsignedBigInt
+  image            String?
+  status           BasicStatus   @default(active)
+  meta_title       String?       @db.VarChar(255)
+  meta_description String?       @db.Text
+  canonical_url    String?       @db.VarChar(255)
+  og_image         String?       @db.VarChar(255)
+  sort_order       Int           @default(0)
+
+  parent           PostCategory? @relation("PostCategoryToParent", fields: [parent_id], references: [id])
+  children         PostCategory[] @relation("PostCategoryToParent")
+  posts            Post[]        @relation("PostCategories")
+  primary_posts    Post[]
+
+  @@map("postcategory")
+  @@index([name], map: "idx_name")
+  @@index([slug], map: "idx_slug")
+  @@index([parent_id], map: "idx_parent_id")
+  @@index([status], map: "idx_status")
+  @@index([sort_order], map: "idx_sort_order")
+  @@index([created_at], map: "idx_created_at")
+  @@index([status, sort_order], map: "idx_status_sort_order")
+  @@index([parent_id, status], map: "idx_parent_status")
+  @@index([deleted_at], map: "idx_deleted_at")
+}
+
+model PostTag {
+  id               BigInt      @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?     @db.UnsignedBigInt
+  updated_user_id  BigInt?     @db.UnsignedBigInt
+  created_at       DateTime    @default(now()) @db.DateTime(0)
+  updated_at       DateTime    @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?   @db.DateTime(0)
+
+  name             String      @db.VarChar(255)
+  slug             String      @db.VarChar(255)
+  description      String?     @db.Text
+  status           BasicStatus @default(active)
+  meta_title       String?     @db.VarChar(255)
+  meta_description String?     @db.Text
+  canonical_url    String?     @db.VarChar(255)
+
+  posts            Post[]      @relation("PostTags")
+
+  @@map("posttag")
+  @@index([name], map: "idx_name")
+  @@index([slug], map: "idx_slug")
+  @@index([status], map: "idx_status")
+  @@index([created_at], map: "idx_created_at")
+  @@index([status, created_at], map: "idx_status_created_at")
+  @@index([deleted_at], map: "idx_deleted_at")
+}
+
+model Post {
+  id               BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?       @db.UnsignedBigInt
+  updated_user_id  BigInt?       @db.UnsignedBigInt
+  created_at       DateTime      @default(now()) @db.DateTime(0)
+  updated_at       DateTime      @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?     @db.DateTime(0)
+
+  name             String        @db.VarChar(255)
+  slug             String        @db.VarChar(255)
+  excerpt          String?       @db.Text
+  content          String        @db.LongText
+  image            String?       @db.VarChar(255)
+  cover_image      String?       @db.VarChar(255)
+  primary_postcategory_id BigInt? @db.UnsignedBigInt
+  status           PostStatus    @default(draft)
+  post_type        PostType      @default(text)
+  video_url        String?       @db.VarChar(500)
+  audio_url        String?       @db.VarChar(500)
+  is_featured      Boolean       @default(false)
+  is_pinned        Boolean       @default(false)
+  published_at     DateTime?     @db.DateTime(0)
+  view_count       Int           @default(0)
+  meta_title       String?       @db.VarChar(255)
+  meta_description String?       @db.Text
+  canonical_url    String?       @db.VarChar(255)
+  og_title         String?       @db.VarChar(255)
+  og_description   String?       @db.Text
+  og_image         String?       @db.VarChar(255)
+  group_id         BigInt?       @db.UnsignedBigInt
+
+  primary_category PostCategory? @relation(fields: [primary_postcategory_id], references: [id])
+  categories       PostCategory[] @relation("PostCategories")
+  tags             PostTag[]     @relation("PostTags")
+
+  @@map("posts")
+  @@index([name], map: "idx_name")
+  @@index([slug], map: "idx_slug")
+  @@index([primary_postcategory_id], map: "idx_primary_postcategory_id")
+  @@index([status], map: "idx_status")
+  @@index([post_type], map: "idx_post_type")
+  @@index([is_featured], map: "idx_is_featured")
+  @@index([is_pinned], map: "idx_is_pinned")
+  @@index([published_at], map: "idx_published_at")
+  @@index([view_count], map: "idx_view_count")
+  @@index([created_at], map: "idx_created_at")
+  @@index([status, published_at], map: "idx_status_published_at")
+  @@index([is_featured, status], map: "idx_is_featured_status")
+  @@index([primary_postcategory_id, status], map: "idx_primary_category_status")
+  @@index([group_id], map: "idx_posts_group_id")
+  @@index([deleted_at], map: "idx_deleted_at")
+}
+
+model Menu {
+  id                    BigInt           @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id       BigInt?          @db.UnsignedBigInt
+  updated_user_id       BigInt?          @db.UnsignedBigInt
+  created_at            DateTime         @default(now()) @db.DateTime(0)
+  updated_at            DateTime         @updatedAt @db.DateTime(0)
+  deleted_at            DateTime?        @db.DateTime(0)
+
+  code                  String           @db.VarChar(120)
+  name                  String           @db.VarChar(150)
+  path                  String?          @db.VarChar(255)
+  api_path              String?          @db.VarChar(255)
+  icon                  String?
+  type                  MenuType         @default(route)
+  status                BasicStatus      @default(active)
+  parent_id             BigInt?          @db.UnsignedBigInt
+  sort_order            Int              @default(0)
+  is_public             Boolean          @default(false)
+  show_in_menu          Boolean          @default(true)
+  required_permission_id BigInt?         @db.UnsignedBigInt
+
+  parent                Menu?            @relation("MenuToParent", fields: [parent_id], references: [id])
+  children              Menu[]           @relation("MenuToParent")
+  required_permission   Permission?      @relation(fields: [required_permission_id], references: [id])
+  menu_permissions      MenuPermission[]
+
+  @@map("menus")
+  @@unique([code])
+  @@index([parent_id])
+  @@index([required_permission_id])
+  @@index([status, show_in_menu])
+  @@index([deleted_at], map: "idx_deleted_at")
+}
+
+model MenuPermission {
+  id            BigInt      @id @default(autoincrement()) @db.UnsignedBigInt
+  menu_id       BigInt      @db.UnsignedBigInt
+  permission_id BigInt      @db.UnsignedBigInt
+
+  menu       Menu       @relation(fields: [menu_id], references: [id])
+  permission Permission @relation(fields: [permission_id], references: [id])
+
+  @@map("menu_permissions")
+  @@index([menu_id])
+  @@index([permission_id])
+}
+
+model Notification {
+  id               BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?       @db.UnsignedBigInt
+  updated_user_id  BigInt?       @db.UnsignedBigInt
+  created_at       DateTime      @default(now()) @db.DateTime(0)
+  updated_at       DateTime      @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?     @db.DateTime(0)
+
+  user_id          BigInt        @db.UnsignedBigInt
+  title            String        @db.VarChar(255)
+  message          String
+  type             NotificationType @default(info)
+  data             Json?
+  is_read          Boolean       @default(false)
+  read_at          DateTime?
+  status           BasicStatus   @default(active)
+
+  user             User          @relation("NotificationUser", fields: [user_id], references: [id])
+  created_user     User?         @relation("NotificationCreatedBy", fields: [created_user_id], references: [id])
+  updated_user     User?         @relation("NotificationUpdatedBy", fields: [updated_user_id], references: [id])
+
+  @@map("notifications")
+  @@index([user_id], map: "idx_notifications_user_id")
+  @@index([status], map: "idx_notifications_status")
+  @@index([type], map: "idx_notifications_type")
+  @@index([is_read], map: "idx_notifications_read")
+}
+
+model Contact {
+  id               BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?       @db.UnsignedBigInt
+  updated_user_id  BigInt?       @db.UnsignedBigInt
+  created_at       DateTime      @default(now()) @db.DateTime(0)
+  updated_at       DateTime      @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?     @db.DateTime(0)
+
+  name             String        @db.VarChar(255)
+  email            String        @db.VarChar(255)
+  phone            String?       @db.VarChar(20)
+  subject          String?       @db.VarChar(255)
+  message          String
+  status           ContactStatus @default(pending)
+  reply            String?       @db.Text
+  replied_at       DateTime?     @db.DateTime(0)
+  replied_by       BigInt?       @db.UnsignedBigInt
+
+  @@map("contacts")
+  @@index([email], map: "idx_contacts_email")
+  @@index([status], map: "idx_contacts_status")
+  @@index([created_at], map: "idx_contacts_created_at")
+  @@index([deleted_at], map: "idx_contacts_deleted_at")
+  @@index([status, created_at], map: "idx_contacts_status_created")
+}
+
+model GeneralConfig {
+  id               BigInt     @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?    @db.UnsignedBigInt
+  updated_user_id  BigInt?    @db.UnsignedBigInt
+  created_at       DateTime   @default(now()) @db.DateTime(0)
+  updated_at       DateTime   @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?  @db.DateTime(0)
+
+  site_name        String     @db.VarChar(255)
+  site_description String?    @db.Text
+  site_logo        String?    @db.VarChar(500)
+  site_favicon     String?    @db.VarChar(500)
+  site_email       String?    @db.VarChar(255)
+  site_phone       String?    @db.VarChar(20)
+  site_address     String?    @db.Text
+  site_copyright   String?    @db.VarChar(255)
+  timezone         String     @default("Asia/Ho_Chi_Minh") @db.VarChar(50)
+  locale           String     @default("vi") @db.VarChar(10)
+  currency         String     @default("VND") @db.VarChar(10)
+  contact_channels Json?
+  meta_title       String?    @db.VarChar(255)
+  meta_keywords    String?    @db.Text
+  og_title         String?    @db.VarChar(255)
+  og_description   String?    @db.Text
+  og_image         String?    @db.VarChar(500)
+  canonical_url    String?    @db.VarChar(500)
+  google_analytics_id String? @db.VarChar(50)
+  google_search_console String? @db.VarChar(255)
+  facebook_pixel_id String?   @db.VarChar(50)
+  twitter_site     String?    @db.VarChar(50)
+
+  @@map("general_configs")
+  @@index([deleted_at], map: "idx_general_configs_deleted_at")
+}
+
+model EmailConfig {
+  id               BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?   @db.UnsignedBigInt
+  updated_user_id  BigInt?   @db.UnsignedBigInt
+  created_at       DateTime  @default(now()) @db.DateTime(0)
+  updated_at       DateTime  @updatedAt @db.DateTime(0)
+  deleted_at       DateTime? @db.DateTime(0)
+
+  smtp_host        String    @db.VarChar(255)
+  smtp_port        Int       @default(587)
+  smtp_secure      Boolean   @default(true)
+  smtp_username    String    @db.VarChar(255)
+  smtp_password    String    @db.VarChar(500)
+  from_email       String    @db.VarChar(255)
+  from_name        String    @db.VarChar(255)
+  reply_to_email   String?   @db.VarChar(255)
+
+  @@map("email_configs")
+  @@index([deleted_at], map: "idx_email_configs_deleted_at")
+}
+
+model BannerLocation {
+  id               BigInt     @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?    @db.UnsignedBigInt
+  updated_user_id  BigInt?    @db.UnsignedBigInt
+  created_at       DateTime   @default(now()) @db.DateTime(0)
+  updated_at       DateTime   @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?  @db.DateTime(0)
+
+  code             String     @unique @db.VarChar(100)
+  name             String     @db.VarChar(255)
+  description      String?    @db.Text
+  status           BasicStatus @default(active)
+
+  banners          Banner[]
+
+  @@map("banner_locations")
+  @@unique([code], map: "idx_banner_locations_code")
+  @@index([status], map: "idx_banner_locations_status")
+  @@index([deleted_at], map: "idx_banner_locations_deleted_at")
+}
+
+model Banner {
+  id               BigInt          @id @default(autoincrement()) @db.UnsignedBigInt
+  created_user_id  BigInt?         @db.UnsignedBigInt
+  updated_user_id  BigInt?         @db.UnsignedBigInt
+  created_at       DateTime        @default(now()) @db.DateTime(0)
+  updated_at       DateTime        @updatedAt @db.DateTime(0)
+  deleted_at       DateTime?       @db.DateTime(0)
+
+  title            String          @db.VarChar(255)
+  subtitle         String?         @db.VarChar(255)
+  image            String          @db.VarChar(500)
+  mobile_image     String?         @db.VarChar(500)
+  link             String?         @db.VarChar(500)
+  link_target      BannerLinkTarget @default(self)
+  description      String?         @db.Text
+  button_text      String?         @db.VarChar(100)
+  button_color     String?         @db.VarChar(20)
+  text_color       String?         @db.VarChar(20)
+  location_id      BigInt          @db.UnsignedBigInt
+  sort_order       Int             @default(0)
+  status           BasicStatus     @default(active)
+  start_date       DateTime?       @db.DateTime(0)
+  end_date         DateTime?        @db.DateTime(0)
+
+  location         BannerLocation  @relation(fields: [location_id], references: [id], onDelete: Cascade)
+
+  @@map("banners")
+  @@index([title], map: "idx_banners_title")
+  @@index([location_id], map: "idx_banners_location_id")
+  @@index([status], map: "idx_banners_status")
+  @@index([sort_order], map: "idx_banners_sort_order")
+  @@index([start_date], map: "idx_banners_start_date")
+  @@index([end_date], map: "idx_banners_end_date")
+  @@index([status, sort_order], map: "idx_banners_status_sort")
+  @@index([location_id, status], map: "idx_banners_location_status")
+  @@index([deleted_at], map: "idx_banners_deleted_at")
+}
+

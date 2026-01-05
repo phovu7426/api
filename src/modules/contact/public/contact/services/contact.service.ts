@@ -1,27 +1,28 @@
 import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DeepPartial } from 'typeorm';
-import { Contact } from '@/shared/entities/contact.entity';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
 import { ContactStatus } from '@/shared/enums/contact-status.enum';
 import { CreateContactDto } from '@/modules/contact/public/contact/dtos/create-contact.dto';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class PublicContactService {
   constructor(
-    @InjectRepository(Contact)
-    private readonly contactRepository: Repository<Contact>,
+    private readonly prisma: PrismaService,
   ) {}
 
   /**
-   * Tạo contact mới từ public
+   * Create contact from public
    */
-  async create(createContactDto: CreateContactDto): Promise<Contact> {
-    const contact = this.contactRepository.create({
-      ...createContactDto,
-      status: ContactStatus.Pending,
-    } as DeepPartial<Contact>);
-    
-    return this.contactRepository.save(contact);
+  async create(createContactDto: CreateContactDto) {
+    return this.prisma.contact.create({
+      data: {
+        name: createContactDto.name,
+        email: createContactDto.email,
+        phone: createContactDto.phone ?? null,
+        subject: createContactDto.subject ?? null,
+        message: createContactDto.message,
+        status: ContactStatus.pending,
+      },
+    });
   }
 }
-

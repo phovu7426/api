@@ -18,5 +18,5 @@ export class CreateBannerLocationDto {
     description?: string;
 
     @IsOptional()
-    status?: BasicStatus = BasicStatus.Active;
+    status?: BasicStatus = BasicStatus.active;
 }

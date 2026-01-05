@@ -19,8 +19,8 @@ export class PermissionController {
   @Permission('permission.manage')
   @Get('simple')
   async getSimpleList(@Query() query: any) {
-    const { filters, options } = prepareQuery(query);
-    return this.service.getSimpleList(filters, options);
+    const { filters } = prepareQuery(query);
+    return this.service.getSimpleList(filters);
   }
 
   @Permission('permission.manage')

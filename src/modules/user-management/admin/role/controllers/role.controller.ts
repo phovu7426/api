@@ -24,7 +24,7 @@ export class RoleController {
   async getSimpleList(@Query() query: any) {
     // Tách pagination options ra khỏi filters
     const { page, limit, sort, ...filters } = query;
-    return this.service.getSimpleList(filters, { page, limit, sort });
+    return this.service.getSimpleList(filters);
   }
 
   @Permission('role.manage')

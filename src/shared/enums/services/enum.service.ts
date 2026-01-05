@@ -1,11 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { BasicStatus, BasicStatusLabels } from '../basic-status.enum';
-import { Gender } from '../gender.enum';
+import { Gender, GenderLabels } from '../gender.enum';
 import { UserStatus, UserStatusLabels } from '../user-status.enum';
 import { ReviewStatus, ReviewStatusLabels } from '../review-status.enum';
 import { PostStatus, PostStatusLabels } from '../post-status.enum';
 import { PostType, PostTypeLabels } from '../post-type.enum';
 import { ContactStatus, ContactStatusLabels } from '../contact-status.enum';
+import { NotificationType, NotificationTypeLabels } from '../notification-type.enum';
+import { BannerLinkTarget, BannerLinkTargetLabels } from '../banner-link-target.enum';
+import { MenuType, MenuTypeLabels } from '../menu-type.enum';
 
 @Injectable()
 export class EnumService {
@@ -17,11 +20,7 @@ export class EnumService {
     },
     gender: {
       enum: Gender,
-      labels: {
-        [Gender.Male]: 'Nam',
-        [Gender.Female]: 'Nữ',
-        [Gender.Other]: 'Khác'
-      }
+      labels: GenderLabels
     },
     user_status: {
       enum: UserStatus,
@@ -42,6 +41,18 @@ export class EnumService {
     contact_status: {
       enum: ContactStatus,
       labels: ContactStatusLabels
+    },
+    notification_type: {
+      enum: NotificationType,
+      labels: NotificationTypeLabels
+    },
+    banner_link_target: {
+      enum: BannerLinkTarget,
+      labels: BannerLinkTargetLabels
+    },
+    menu_type: {
+      enum: MenuType,
+      labels: MenuTypeLabels
     }
   };
 
@@ -95,7 +106,10 @@ export class EnumService {
       review_status: 'ReviewStatus',
       post_status: 'PostStatus',
       post_type: 'PostType',
-      contact_status: 'ContactStatus'
+      contact_status: 'ContactStatus',
+      notification_type: 'NotificationType',
+      banner_link_target: 'BannerLinkTarget',
+      menu_type: 'MenuType'
     };
     return nameMap[key] || key;
   }

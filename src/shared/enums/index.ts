@@ -7,11 +7,10 @@ export { MenuType, MenuTypeLabels } from './menu-type.enum';
 export { PostStatus, PostStatusLabels, PUBLIC_POST_STATUSES, MANAGEABLE_POST_STATUSES } from './post-status.enum';
 export { PostType, PostTypeLabels, MEDIA_POST_TYPES, REQUIRES_MEDIA_URL_POST_TYPES } from './post-type.enum';
 export { ContactStatus, ContactStatusLabels } from './contact-status.enum';
-export { ComicStatus, ComicStatusLabels, PUBLIC_COMIC_STATUSES, MANAGEABLE_COMIC_STATUSES } from './comic-status.enum';
-export { ChapterStatus, ChapterStatusLabels, PUBLIC_CHAPTER_STATUSES, MANAGEABLE_CHAPTER_STATUSES } from './chapter-status.enum';
+export { NotificationType, NotificationTypeLabels } from './notification-type.enum';
 
 // Banner enums
-export { BannerLinkTarget, BannerLinkTargetLabels } from '../entities/banner.entity';
+export { BannerLinkTarget, BannerLinkTargetLabels } from './banner-link-target.enum';
 
 // Interfaces
 export { EnumValueMetadata } from './interfaces/enum-metadata.interface';

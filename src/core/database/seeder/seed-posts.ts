@@ -1,36 +1,35 @@
-import { DataSource } from 'typeorm';
 import { Injectable, Logger } from '@nestjs/common';
-import { Post } from '@/shared/entities/post.entity';
-import { PostCategory } from '@/shared/entities/post-category.entity';
-import { PostTag } from '@/shared/entities/post-tag.entity';
-import { User } from '@/shared/entities/user.entity';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
 import { PostStatus, PostType } from '@/shared/enums';
 
 @Injectable()
 export class SeedPosts {
   private readonly logger = new Logger(SeedPosts.name);
 
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async seed(): Promise<void> {
     this.logger.log('Seeding posts...');
 
-    const postRepo = this.dataSource.getRepository(Post);
-    const categoryRepo = this.dataSource.getRepository(PostCategory);
-    const tagRepo = this.dataSource.getRepository(PostTag);
-    const userRepo = this.dataSource.getRepository(User);
-
     // Check if posts already exist
-    const existingPosts = await postRepo.count();
+    const existingPosts = await this.prisma.post.count({
+      where: { deleted_at: null },
+    });
     if (existingPosts > 0) {
       this.logger.log(`Found ${existingPosts} existing posts. Skipping seed. Use --refresh flag to clear and reseed.`);
       return;
     }
 
     // Get all categories, tags, and users for random assignment
-    const allCategories = await categoryRepo.find();
-    const allTags = await tagRepo.find();
-    const allUsers = await userRepo.find();
+    const allCategories = await this.prisma.postCategory.findMany({
+      where: { deleted_at: null },
+    });
+    const allTags = await this.prisma.postTag.findMany({
+      where: { deleted_at: null },
+    });
+    const allUsers = await this.prisma.user.findMany({
+      where: { deleted_at: null },
+    });
 
     if (allCategories.length === 0 || allTags.length === 0 || allUsers.length === 0) {
       this.logger.warn('Categories, tags, or users not found. Please seed them first.');
@@ -78,11 +77,11 @@ export class SeedPosts {
     // Còn lại là text (mặc định)
 
     const statuses: Array<PostStatus> = [
-      PostStatus.PUBLISHED,
-      PostStatus.PUBLISHED,
-      PostStatus.PUBLISHED,
-      PostStatus.DRAFT,
-      PostStatus.PUBLISHED
+      PostStatus.published,
+      PostStatus.published,
+      PostStatus.published,
+      PostStatus.draft,
+      PostStatus.published
     ];
 
     // Video URLs mẫu (có thể thay bằng URLs thực tế)
@@ -127,21 +126,21 @@ export class SeedPosts {
       const isPinned = i < 3; // First 3 posts are pinned
       
       // Xác định loại bài viết
-      let postType: PostType = PostType.TEXT;
+      let postType: PostType = PostType.text;
       let videoUrl: string | null = null;
       let audioUrl: string | null = null;
       let coverImage: string | null = null;
 
       if (videoPostIndices.includes(i)) {
-        postType = PostType.VIDEO;
+        postType = PostType.video;
         videoUrl = sampleVideoUrls[videoPostIndices.indexOf(i) % sampleVideoUrls.length];
         coverImage = sampleCoverImages[i % sampleCoverImages.length];
       } else if (audioPostIndices.includes(i)) {
-        postType = PostType.AUDIO;
+        postType = PostType.audio;
         audioUrl = sampleAudioUrls[audioPostIndices.indexOf(i) % sampleAudioUrls.length];
         coverImage = sampleCoverImages[i % sampleCoverImages.length];
       } else if (imagePostIndices.includes(i)) {
-        postType = PostType.IMAGE;
+        postType = PostType.image;
         coverImage = sampleCoverImages[i % sampleCoverImages.length];
       }
       
@@ -160,31 +159,36 @@ export class SeedPosts {
       const postTags = shuffledTags.slice(0, numTags);
       
       // Published date (if published)
-      const publishedAt = status === PostStatus.PUBLISHED
+      const publishedAt = status === PostStatus.published
         ? new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000)
         : null;
       
-      const post = postRepo.create({
-        name: title,
-        slug: slug,
-        excerpt: `Đây là phần tóm tắt của bài viết "${title}". Bài viết này sẽ cung cấp những thông tin hữu ích về chủ đề liên quan.`,
-        content: this.generateContent(title, postType),
-        post_type: postType,
-        video_url: videoUrl,
-        audio_url: audioUrl,
-        cover_image: coverImage,
-        status: status,
-        is_featured: isFeatured,
-        is_pinned: isPinned,
-        published_at: publishedAt,
-        view_count: Math.floor(Math.random() * 10000),
-        primary_postcategory_id: primaryCategory?.id,
-        created_user_id: randomUser.id,
-        categories: postCategories,
-        tags: postTags,
+      const post = await this.prisma.post.create({
+        data: {
+          name: title,
+          slug: slug,
+          excerpt: `Đây là phần tóm tắt của bài viết "${title}". Bài viết này sẽ cung cấp những thông tin hữu ích về chủ đề liên quan.`,
+          content: this.generateContent(title, postType),
+          post_type: postType as any,
+          video_url: videoUrl,
+          audio_url: audioUrl,
+          cover_image: coverImage,
+          status: status as any,
+          is_featured: isFeatured,
+          is_pinned: isPinned,
+          published_at: publishedAt,
+          view_count: Math.floor(Math.random() * 10000),
+          primary_postcategory_id: primaryCategory ? primaryCategory.id : null,
+          created_user_id: randomUser.id,
+          categories: {
+            connect: postCategories.map(cat => ({ id: cat.id })),
+          },
+          tags: {
+            connect: postTags.map(tag => ({ id: tag.id })),
+          },
+        },
       });
 
-      const saved = await postRepo.save(post);
       this.logger.log(`Created post: ${title} (${postType}, ${status}, categories: ${postCategories.length}, tags: ${postTags.length})`);
     }
 
@@ -204,13 +208,13 @@ export class SeedPosts {
       .trim();
   }
 
-  private generateContent(title: string, postType: PostType = PostType.TEXT): string {
+  private generateContent(title: string, postType: PostType = PostType.text): string {
     let content = `
       <h1>${title}</h1>
       <p>Đây là nội dung chi tiết của bài viết về chủ đề "${title}".</p>
     `;
 
-    if (postType === PostType.VIDEO) {
+    if (postType === PostType.video) {
       content += `
       <h2>Video hướng dẫn</h2>
       <p>Video này sẽ hướng dẫn bạn chi tiết về chủ đề "${title}". Hãy xem video để hiểu rõ hơn về các khái niệm và kỹ thuật được trình bày.</p>
@@ -225,7 +229,7 @@ export class SeedPosts {
       <h2>Kết luận</h2>
       <p>Hy vọng video này đã cung cấp cho bạn những thông tin hữu ích. Nếu bạn có bất kỳ câu hỏi nào, đừng ngần ngại để lại comment bên dưới.</p>
       `;
-    } else if (postType === PostType.AUDIO) {
+    } else if (postType === PostType.audio) {
       content += `
       <h2>Podcast / Audio</h2>
       <p>Audio này sẽ thảo luận chi tiết về chủ đề "${title}". Hãy nghe audio để hiểu rõ hơn về các khái niệm và quan điểm được trình bày.</p>
@@ -240,7 +244,7 @@ export class SeedPosts {
       <h2>Kết luận</h2>
       <p>Hy vọng audio này đã cung cấp cho bạn những thông tin hữu ích. Nếu bạn có bất kỳ câu hỏi nào, đừng ngần ngại để lại comment bên dưới.</p>
       `;
-    } else if (postType === PostType.IMAGE) {
+    } else if (postType === PostType.image) {
       content += `
       <h2>Gallery hình ảnh</h2>
       <p>Bài viết này bao gồm một bộ sưu tập hình ảnh về chủ đề "${title}". Hãy xem các hình ảnh để hiểu rõ hơn về các khái niệm và ví dụ được trình bày.</p>
@@ -276,34 +280,24 @@ export class SeedPosts {
 
   async clear(): Promise<void> {
     this.logger.log('Clearing posts...');
-    const postRepo = this.dataSource.getRepository(Post);
     
     // Xóa junction tables trước để tránh lỗi duplicate key
-    // Sau đó xóa posts (CASCADE sẽ tự động xóa nếu còn sót)
     try {
-      await this.dataSource.query('DELETE FROM post_posttag');
+      await this.prisma.$executeRaw`DELETE FROM post_posttag`;
       this.logger.log('Cleared post_posttag junction table');
-    } catch (error) {
-      this.logger.warn('Could not clear post_posttag (may not exist):', error.message);
+    } catch (error: any) {
+      this.logger.warn(`Could not clear post_posttag (may not exist): ${error.message}`);
     }
     
     try {
-      await this.dataSource.query('DELETE FROM post_postcategory');
+      await this.prisma.$executeRaw`DELETE FROM post_postcategory`;
       this.logger.log('Cleared post_postcategory junction table');
-    } catch (error) {
-      this.logger.warn('Could not clear post_postcategory (may not exist):', error.message);
+    } catch (error: any) {
+      this.logger.warn(`Could not clear post_postcategory (may not exist): ${error.message}`);
     }
     
     // Xóa tất cả posts
-    const allPosts = await postRepo.find();
-    if (allPosts.length > 0) {
-      await postRepo.remove(allPosts);
-      this.logger.log(`Cleared ${allPosts.length} posts`);
-    } else {
-      this.logger.log('No posts to clear');
-    }
-    
+    await this.prisma.post.deleteMany({});
     this.logger.log('Posts cleared successfully');
   }
 }
-

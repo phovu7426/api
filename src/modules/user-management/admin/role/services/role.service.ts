@@ -1,224 +1,432 @@
-import { Injectable, NotFoundException, BadRequestException, Inject } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DeepPartial, In } from 'typeorm';
-import { Role } from '@/shared/entities/role.entity';
-import { Permission } from '@/shared/entities/permission.entity';
-import { Context } from '@/shared/entities/context.entity';
-import { RoleContext } from '@/shared/entities/role-context.entity';
-import { CrudService } from '@/common/base/services/crud.service';
-import { ResponseRef } from '@/common/base/utils/response-ref.helper';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { PrismaService } from '@/core/database/prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 import { RbacCacheService } from '@/modules/rbac/services/rbac-cache.service';
 import { RequestContext } from '@/common/utils/request-context.util';
-import { Filters, Options } from '@/common/base/interfaces/list.interface';
-import { createPaginationMeta } from '@/common/base/utils/pagination.helper';
-import { getCurrentContext, getCurrentGroup } from '@/common/utils/group-ownership.util';
 
 @Injectable()
-export class RoleService extends CrudService<Role> {
-  private get permRepo(): Repository<Permission> {
-    return this.repository.manager.getRepository(Permission);
-  }
-
-  private get contextRepo(): Repository<Context> {
-    return this.repository.manager.getRepository(Context);
-  }
-
-  private get roleContextRepo(): Repository<RoleContext> {
-    return this.repository.manager.getRepository(RoleContext);
-  }
-
+export class RoleService {
   // Biến tạm để lưu context_ids khi create/update
   private tempContextIds: number[] | null = null;
 
   constructor(
-    @InjectRepository(Role) protected readonly repository: Repository<Role>,
+    private readonly prisma: PrismaService,
     private readonly rbacCache: RbacCacheService,
-  ) {
-    super(repository);
-  }
+  ) {}
 
   /**
-   * Override prepareOptions để load relations
+   * Get list of roles
    */
-  protected override prepareOptions(queryOptions: any = {}) {
-    const base = super.prepareOptions(queryOptions);
-    const context = RequestContext.get<Context>('context');
+  async getList(filters?: any, options?: any) {
+    // Filter by context if not system admin
+    const context = RequestContext.get<any>('context');
     const contextId = RequestContext.get<number>('contextId') || 1;
 
-    // Base relations
-    const baseRelations = ['parent', 'children', 'permissions', 'role_contexts'];
-
-    // System admin → load thêm role_contexts.context
-    if (!context || context.type === 'system') {
-      return {
-        ...base,
-        relations: [
-          ...baseRelations,
-          'role_contexts.context'
-        ].filter((v, i, a) => a.indexOf(v) === i) // Remove duplicates
-      } as any;
+    let roleIds: bigint[] | undefined = undefined;
+    if (context && context.type !== 'system') {
+      const roleContexts = await this.prisma.roleContext.findMany({
+        where: { context_id: BigInt(contextId) },
+        select: { role_id: true },
+      });
+      roleIds = roleContexts.map(rc => rc.role_id);
+      if (roleIds.length === 0) {
+        return {
+          data: [],
+          meta: {
+            total: 0,
+            page: options?.page || 1,
+            limit: options?.limit || 10,
+            totalPages: 0,
+          },
+        };
+      }
     }
 
-    // Context admin → load role_contexts và context
+    const where: Prisma.RoleWhereInput = {
+      ...(filters?.status && { status: filters.status }),
+      ...(filters?.code && { code: { contains: filters.code } }),
+      ...(roleIds && { id: { in: roleIds } }),
+      ...(filters?.parent_id !== undefined && { parent_id: filters.parent_id ? BigInt(filters.parent_id) : null }),
+      deleted_at: null,
+    };
+
+    const orderBy: Prisma.RoleOrderByWithRelationInput[] = options?.sort 
+      ? this.parseSort(options.sort)
+      : [{ created_at: 'desc' }];
+
+    const page = options?.page || 1;
+    const limit = options?.limit || 10;
+    const skip = (page - 1) * limit;
+
+    const include: Prisma.RoleInclude = {
+      parent: true,
+      children: true,
+      permissions: true,
+      role_contexts: context && context.type === 'system' ? {
+        include: {
+          context: true,
+        },
+      } : {
+        where: { context_id: BigInt(contextId) },
+        include: {
+          context: true,
+        },
+      },
+    };
+
+    const [data, total] = await Promise.all([
+      this.prisma.role.findMany({
+        where,
+        orderBy,
+        skip,
+        take: limit,
+        include,
+      }),
+      this.prisma.role.count({ where }),
+    ]);
+
     return {
-      ...base,
-      relations: [
-        ...baseRelations,
-        'role_contexts',
-        'role_contexts.context'
-      ].filter((v, i, a) => a.indexOf(v) === i) // Remove duplicates
-    } as any;
-  }
-
-  /**
-   * Override prepareFilters để filter roles theo context
-   * Query role IDs có trong context và dùng In() operator để filter
-   */
-  protected override async prepareFilters(
-    filters?: Filters<Role>,
-    _options?: Options,
-  ): Promise<boolean | any> {
-    const prepared = { ...(filters || {}) };
-
-    // Lấy context từ RequestContext
-    const context = await getCurrentContext(this.contextRepo);
-    const contextId = RequestContext.get<number>('contextId') || 1;
-
-    // System admin (context.type = 'system') → không filter, lấy tất cả
-    if (!context || context.type === 'system') {
-      return prepared;
-    }
-
-    // Context admin → query role IDs có trong context
-    const roleContexts = await this.roleContextRepo.find({
-      where: { context_id: contextId } as any,
-      select: ['role_id'],
-    });
-
-    const roleIds = roleContexts.map(rc => rc.role_id);
-
-    // Nếu không có role nào trong context, trả về false để skip query (trả về empty result)
-    if (roleIds.length === 0) {
-      return false;
-    }
-
-    // Thêm filter id: In(roleIds) để chỉ lấy roles có trong context
-    return {
-      ...prepared,
-      id: In(roleIds),
+      data: this.transformRoleList(data),
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
     };
   }
 
-
   /**
-   * Override getOne - tương tự product service
-   * Controller đã truyền relations trong options rồi
+   * Get one role
    */
-  override async getOne(where: any, options?: any): Promise<Role | null> {
-    return super.getOne(where, options);
+  async getOne(where: any, options?: any): Promise<any | null> {
+    const context = RequestContext.get<any>('context');
+    const contextId = RequestContext.get<number>('contextId') || 1;
+
+    const whereInput: Prisma.RoleWhereInput = {
+      ...(where.id && { id: BigInt(where.id) }),
+      ...(where.code && { code: where.code }),
+      deleted_at: null,
+    };
+
+    const include: Prisma.RoleInclude = {
+      parent: true,
+      children: true,
+      permissions: true,
+      role_contexts: context && context.type === 'system' ? {
+        include: {
+          context: true,
+        },
+      } : {
+        where: { context_id: BigInt(contextId) },
+        include: {
+          context: true,
+        },
+      },
+    };
+
+    const role = await this.prisma.role.findFirst({
+      where: whereInput,
+      include,
+    });
+
+    if (!role) {
+      return null;
+    }
+
+    return this.transformRole(role);
   }
 
   /**
-   * Transform data sau khi lấy danh sách để chỉ giữ các fields cần thiết
+   * Create role
    */
-  protected async afterGetList(
-    data: Role[],
-    filters?: any,
-    options?: any
-  ): Promise<Role[]> {
-    return data.map(role => {
-      if (role.parent) {
-        const { id, code, name, status } = role.parent;
-        role.parent = { id, code, name, status } as any;
+  async create(data: any, createdBy?: number) {
+    // Validate code unique
+    if (data.code) {
+      const exists = await this.prisma.role.findFirst({
+        where: { code: data.code, deleted_at: null },
+      });
+      if (exists) {
+        throw new Error('Role code already exists');
       }
-      if (role.children) {
-        role.children = role.children.map(child => {
-          const { id, code, name, status } = child;
-          return { id, code, name, status } as any;
+    }
+
+    // Handle context_ids
+    const contextIds = data.context_ids;
+    if (contextIds && Array.isArray(contextIds) && contextIds.length > 0) {
+      // Validate contexts exist
+      const contexts = await this.prisma.context.findMany({
+        where: { id: { in: contextIds.map(id => BigInt(id)) } },
+      });
+      if (contexts.length !== contextIds.length) {
+        throw new BadRequestException('Some context IDs are invalid');
+      }
+      this.tempContextIds = contextIds;
+    } else {
+      this.tempContextIds = [];
+    }
+
+    const role = await this.prisma.role.create({
+      data: {
+        code: data.code,
+        name: data.name,
+        status: data.status ?? 'active',
+        parent_id: data.parent_id ? BigInt(data.parent_id) : null,
+        created_user_id: createdBy ? BigInt(createdBy) : null,
+        updated_user_id: createdBy ? BigInt(createdBy) : null,
+        permissions: data.permission_ids && data.permission_ids.length > 0 ? {
+          connect: data.permission_ids.map((id: number) => ({ id: BigInt(id) })),
+        } : undefined,
+      },
+      include: {
+        parent: true,
+        children: true,
+        permissions: true,
+        role_contexts: {
+          include: {
+            context: true,
+          },
+        },
+      },
+    });
+
+    // Handle context_ids
+    if (this.tempContextIds !== null) {
+      if (this.tempContextIds.length > 0) {
+        await this.prisma.roleContext.createMany({
+          data: this.tempContextIds.map(contextId => ({
+            role_id: role.id,
+            context_id: BigInt(contextId),
+          })),
         });
       }
-      if (role.permissions) {
-        role.permissions = role.permissions.map(perm => {
-          const { id, code, name, status } = perm;
-          return { id, code, name, status } as any;
-        });
+      this.tempContextIds = null;
+    }
+
+    return this.transformRole(role);
+  }
+
+  /**
+   * Update role
+   */
+  async update(id: number, data: any, updatedBy?: number) {
+    const existing = await this.prisma.role.findUnique({ where: { id: BigInt(id) } });
+    if (!existing) {
+      throw new NotFoundException(`Role with ID ${id} not found`);
+    }
+
+    // Validate code unique if changed
+    if (data.code && data.code !== existing.code) {
+      const exists = await this.prisma.role.findFirst({
+        where: { code: data.code, deleted_at: null },
+      });
+      if (exists) {
+        throw new Error('Role code already exists');
       }
-      // Transform role_contexts để trả về contexts và context_ids cho FE
-      if (role.role_contexts) {
-        const contextId = RequestContext.get<number>('contextId') || 1;
-        const context = RequestContext.get<Context>('context');
-        
-        // Nếu không phải system admin, chỉ lấy role_contexts của context hiện tại
-        let filteredRoleContexts = role.role_contexts;
-        if (context && context.type !== 'system') {
-          filteredRoleContexts = role.role_contexts.filter(rc => rc.context_id === contextId);
+    }
+
+    // Handle context_ids
+    if (data.context_ids !== undefined) {
+      if (Array.isArray(data.context_ids) && data.context_ids.length > 0) {
+        const contexts = await this.prisma.context.findMany({
+          where: { id: { in: data.context_ids.map((id: number) => BigInt(id)) } },
+        });
+        if (contexts.length !== data.context_ids.length) {
+          throw new BadRequestException('Some context IDs are invalid');
         }
-        
-        (role as any).context_ids = filteredRoleContexts.map(rc => Number(rc.context_id));
-        // Trả về thông tin context đầy đủ để hiển thị ở giao diện
-        (role as any).contexts = filteredRoleContexts
-          .filter(rc => rc.context) // Chỉ lấy những context đã load
-          .map(rc => {
-            const ctx = rc.context!;
-            return {
-              id: Number(ctx.id),
-              type: ctx.type,
-              name: ctx.name,
-              status: ctx.status,
-              ref_id: ctx.ref_id ? Number(ctx.ref_id) : null,
-            };
-          });
-        // Bỏ role_contexts khỏi response để tránh dư thừa (đã có contexts và context_ids)
-        delete (role as any).role_contexts;
+        this.tempContextIds = data.context_ids;
       } else {
-        (role as any).context_ids = [];
-        (role as any).contexts = [];
+        this.tempContextIds = [];
       }
-      return role;
+    }
+
+    const role = await this.prisma.role.update({
+      where: { id: BigInt(id) },
+      data: {
+        ...(data.code !== undefined && { code: data.code }),
+        ...(data.name !== undefined && { name: data.name }),
+        ...(data.status !== undefined && { status: data.status }),
+        ...(data.parent_id !== undefined && { parent_id: data.parent_id ? BigInt(data.parent_id) : null }),
+        ...(data.permission_ids !== undefined && {
+          permissions: {
+            set: data.permission_ids.length > 0 
+              ? data.permission_ids.map((id: number) => ({ id: BigInt(id) }))
+              : [],
+          },
+        }),
+        updated_user_id: updatedBy ? BigInt(updatedBy) : existing.updated_user_id,
+      },
+      include: {
+        parent: true,
+        children: true,
+        permissions: true,
+        role_contexts: {
+          include: {
+            context: true,
+          },
+        },
+      },
+    });
+
+    // Handle context_ids sync
+    if (this.tempContextIds !== null) {
+      // Delete all old contexts
+      await this.prisma.roleContext.deleteMany({
+        where: { role_id: BigInt(id) },
+      });
+
+      // Add new contexts
+      if (this.tempContextIds.length > 0) {
+        await this.prisma.roleContext.createMany({
+          data: this.tempContextIds.map(contextId => ({
+            role_id: BigInt(id),
+            context_id: BigInt(contextId),
+          })),
+        });
+      }
+      this.tempContextIds = null;
+    }
+
+    // Bump cache version
+    if (this.rbacCache && typeof this.rbacCache.bumpVersion === 'function') {
+      await this.rbacCache.bumpVersion().catch(() => undefined);
+    }
+
+    return this.transformRole(role);
+  }
+
+  /**
+   * Delete role (soft delete)
+   */
+  async delete(id: number) {
+    const role = await this.prisma.role.findUnique({
+      where: { id: BigInt(id) },
+      include: {
+        children: true,
+      },
+    });
+
+    if (!role) {
+      throw new NotFoundException('Role not found');
+    }
+
+    // Check if role has children
+    if (role.children.length > 0) {
+      throw new BadRequestException('Cannot delete role with children');
+    }
+
+    // Check if role is assigned to users
+    const userCount = await this.prisma.userRoleAssignment.count({
+      where: { role_id: BigInt(id) },
+    });
+
+    if (userCount > 0) {
+      throw new BadRequestException('Cannot delete role assigned to users');
+    }
+
+    // Bump cache version
+    if (this.rbacCache && typeof this.rbacCache.bumpVersion === 'function') {
+      await this.rbacCache.bumpVersion().catch(() => undefined);
+    }
+
+    return this.prisma.role.update({
+      where: { id: BigInt(id) },
+      data: { deleted_at: new Date() },
     });
   }
 
   /**
-   * Transform data sau khi lấy một entity
+   * Assign permissions to role (sync - replace all)
    */
-  protected async afterGetOne(
-    entity: Role,
-    where?: any,
-    options?: any
-  ): Promise<Role> {
-    if (entity.parent) {
-      const { id, code, name, status } = entity.parent;
-      entity.parent = { id, code, name, status } as any;
+  async assignPermissions(roleId: number, permissionIds: number[]) {
+    const role = await this.prisma.role.findUnique({
+      where: { id: BigInt(roleId) },
+    });
+
+    if (!role) {
+      throw new NotFoundException('Role not found');
     }
-    if (entity.children) {
-      entity.children = entity.children.map(child => {
-        const { id, code, name, status } = child;
-        return { id, code, name, status } as any;
+
+    if (permissionIds.length > 0) {
+      const permissions = await this.prisma.permission.findMany({
+        where: { id: { in: permissionIds.map(id => BigInt(id)) } },
       });
-    }
-    if (entity.permissions) {
-      entity.permissions = entity.permissions.map(perm => {
-        const { id, code, name, status } = perm;
-        return { id, code, name, status } as any;
-      });
-    }
-    // Transform role_contexts để trả về contexts và context_ids cho FE
-    if (entity.role_contexts) {
-      const contextId = RequestContext.get<number>('contextId') || 1;
-      const context = RequestContext.get<Context>('context');
-      
-      // Nếu không phải system admin, chỉ lấy role_contexts của context hiện tại
-      let filteredRoleContexts = entity.role_contexts;
-      if (context && context.type !== 'system') {
-        filteredRoleContexts = entity.role_contexts.filter(rc => rc.context_id === contextId);
+      if (permissions.length !== permissionIds.length) {
+        throw new BadRequestException('Some permission IDs are invalid');
       }
-      
-      (entity as any).context_ids = filteredRoleContexts.map(rc => Number(rc.context_id));
-      // Trả về thông tin context đầy đủ để hiển thị ở giao diện
-      (entity as any).contexts = filteredRoleContexts
-        .filter(rc => rc.context) // Chỉ lấy những context đã load
-        .map(rc => {
-          const ctx = rc.context!;
+    }
+
+    const updated = await this.prisma.role.update({
+      where: { id: BigInt(roleId) },
+      data: {
+        permissions: {
+          set: permissionIds.length > 0 
+            ? permissionIds.map(id => ({ id: BigInt(id) }))
+            : [],
+        },
+      },
+      include: {
+        permissions: true,
+      },
+    });
+
+    if (this.rbacCache && typeof this.rbacCache.bumpVersion === 'function') {
+      await this.rbacCache.bumpVersion().catch(() => undefined);
+    }
+
+    return updated;
+  }
+
+  /**
+   * Transform role list
+   */
+  private transformRoleList(roles: any[]): any[] {
+    return roles.map(role => this.transformRole(role));
+  }
+
+  /**
+   * Transform single role
+   */
+  private transformRole(role: any): any {
+    const context = RequestContext.get<any>('context');
+    const contextId = RequestContext.get<number>('contextId') || 1;
+
+    const result: any = {
+      ...role,
+      id: Number(role.id),
+      parent_id: role.parent_id ? Number(role.parent_id) : null,
+      parent: role.parent ? {
+        id: Number(role.parent.id),
+        code: role.parent.code,
+        name: role.parent.name,
+        status: role.parent.status,
+      } : null,
+      children: role.children?.map((child: any) => ({
+        id: Number(child.id),
+        code: child.code,
+        name: child.name,
+        status: child.status,
+      })) || [],
+      permissions: role.permissions?.map((perm: any) => ({
+        id: Number(perm.id),
+        code: perm.code,
+        name: perm.name,
+        status: perm.status,
+      })) || [],
+    };
+
+    // Transform role_contexts
+    if (role.role_contexts) {
+      let filteredRoleContexts = role.role_contexts;
+      if (context && context.type !== 'system') {
+        filteredRoleContexts = role.role_contexts.filter((rc: any) => Number(rc.context_id) === contextId);
+      }
+
+      result.context_ids = filteredRoleContexts.map((rc: any) => Number(rc.context_id));
+      result.contexts = filteredRoleContexts
+        .filter((rc: any) => rc.context)
+        .map((rc: any) => {
+          const ctx = rc.context;
           return {
             id: Number(ctx.id),
             type: ctx.type,
@@ -227,229 +435,52 @@ export class RoleService extends CrudService<Role> {
             ref_id: ctx.ref_id ? Number(ctx.ref_id) : null,
           };
         });
-      // Bỏ role_contexts khỏi response để tránh dư thừa (đã có contexts và context_ids)
-      delete (entity as any).role_contexts;
     } else {
-      (entity as any).context_ids = [];
-      (entity as any).contexts = [];
-    }
-    return entity;
-  }
-
-  protected async beforeCreate(
-    entity: Role,
-    createDto: DeepPartial<Role>,
-    response?: ResponseRef<Role | null>
-  ): Promise<boolean> {
-    // Validate code unique
-    const code = (createDto as any).code;
-    if (code) {
-      const exists = await this.repository.findOne({ where: { code } as any });
-      if (exists) {
-        if (response) {
-          response.message = 'Role code already exists';
-          response.code = 'ROLE_CODE_EXISTS';
-        }
-        return false;
-      }
+      result.context_ids = [];
+      result.contexts = [];
     }
 
-    // Handle parent_id
-    const parentId = (createDto as any).parent_id;
-    if (parentId) {
-      const parent = await this.repository.findOne({ where: { id: parentId } as any });
-      if (parent) {
-        (createDto as any).parent = parent;
-      }
-      delete (createDto as any).parent_id;
-    }
-
-    // Handle context_ids - lưu vào biến tạm để xử lý sau khi create
-    const contextIds = (createDto as any).context_ids;
-    if (contextIds && Array.isArray(contextIds) && contextIds.length > 0) {
-      // Validate contexts exist
-      const contexts = await this.contextRepo.findBy({ id: In(contextIds) });
-      if (contexts.length !== contextIds.length) {
-        if (response) {
-          response.message = 'Some context IDs are invalid';
-          response.code = 'INVALID_CONTEXT_IDS';
-        }
-        return false;
-      }
-      // Lưu vào biến tạm để xử lý trong afterCreate
-      this.tempContextIds = contextIds;
-    } else {
-      this.tempContextIds = [];
-    }
-    delete (createDto as any).context_ids;
-
-    return true;
+    return result;
   }
 
   /**
-   * Override afterCreate để lưu context_ids vào role_contexts
+   * Get simple list (for dropdowns)
    */
-  protected async afterCreate(
-    entity: Role,
-    createDto: DeepPartial<Role>,
-  ): Promise<void> {
-    if (this.tempContextIds !== null) {
-      if (this.tempContextIds.length > 0) {
-        const roleContexts = this.tempContextIds.map(contextId =>
-          this.roleContextRepo.create({
-            role_id: entity.id,
-            context_id: contextId,
-          }),
-        );
-        await this.roleContextRepo.save(roleContexts);
-      }
-      // Reset biến tạm
-      this.tempContextIds = null;
-    }
-  }
+  async getSimpleList(filters?: any) {
+    const where: Prisma.RoleWhereInput = {
+      ...(filters?.status && { status: filters.status }),
+      deleted_at: null,
+    };
 
-  protected async beforeUpdate(
-    entity: Role,
-    updateDto: DeepPartial<Role>,
-    response?: ResponseRef<Role | null>
-  ): Promise<boolean> {
-    // Validate code unique (exclude current)
-    const code = (updateDto as any).code;
-    if (code && code !== entity.code) {
-      const exists = await this.repository.findOne({ where: { code } as any });
-      if (exists) {
-        if (response) {
-          response.message = 'Role code already exists';
-          response.code = 'ROLE_CODE_EXISTS';
-        }
-        return false;
-      }
-    }
-
-    // Handle parent_id
-    const parentId = (updateDto as any).parent_id;
-    if (parentId !== undefined) {
-      if (parentId === null) {
-        (updateDto as any).parent = null;
-      } else {
-        const parent = await this.repository.findOne({ where: { id: parentId } as any });
-        if (parent) {
-          (updateDto as any).parent = parent;
-        }
-      }
-      delete (updateDto as any).parent_id;
-    }
-
-    // Handle context_ids - lưu vào biến tạm để xử lý sau khi update
-    const contextIds = (updateDto as any).context_ids;
-    if (contextIds !== undefined) {
-      if (Array.isArray(contextIds) && contextIds.length > 0) {
-        // Validate contexts exist
-        const contexts = await this.contextRepo.findBy({ id: In(contextIds) });
-        if (contexts.length !== contextIds.length) {
-          if (response) {
-            response.message = 'Some context IDs are invalid';
-            response.code = 'INVALID_CONTEXT_IDS';
-          }
-          return false;
-        }
-        // Lưu vào biến tạm để xử lý trong afterUpdate
-        this.tempContextIds = contextIds;
-      } else {
-        // context_ids = [] hoặc null → xóa hết contexts
-        this.tempContextIds = [];
-      }
-    }
-    delete (updateDto as any).context_ids;
-
-    return true;
-  }
-
-  /**
-   * Override afterUpdate để sync context_ids vào role_contexts
-   */
-  protected async afterUpdate(
-    entity: Role,
-    updateDto: DeepPartial<Role>,
-  ): Promise<void> {
-    if (this.tempContextIds !== null) {
-      // Xóa tất cả contexts cũ
-      await this.roleContextRepo.delete({ role_id: entity.id });
-
-      // Thêm contexts mới
-      if (this.tempContextIds.length > 0) {
-        const roleContexts = this.tempContextIds.map(contextId =>
-          this.roleContextRepo.create({
-            role_id: entity.id,
-            context_id: contextId,
-          }),
-        );
-        await this.roleContextRepo.save(roleContexts);
-      }
-      // Reset biến tạm
-      this.tempContextIds = null;
-    }
-  }
-
-  protected async beforeDelete(
-    entity: Role,
-    response?: ResponseRef<null>
-  ): Promise<boolean> {
-    // Check if role has children
-    const childrenCount = await this.repository.count({ where: { parent: { id: entity.id } } as any });
-    if (childrenCount > 0) {
-      if (response) {
-        response.message = 'Cannot delete role with children';
-        response.code = 'ROLE_HAS_CHILDREN';
-      }
-      return false;
-    }
-
-    // Check if role is assigned to users
-    const userCount = await this.repository.manager
-      .getRepository('User')
-      .count({ where: { roles: { id: entity.id } } as any });
-
-    if (userCount > 0) {
-      if (response) {
-        response.message = 'Cannot delete role assigned to users';
-        response.code = 'ROLE_ASSIGNED_TO_USERS';
-      }
-      return false;
-    }
-
-    return true;
-  }
-
-  /**
-   * Assign permissions to role (sync - replace all)
-   */
-  async assignPermissions(roleId: number, permissionIds: number[]) {
-    const role = await this.repository.findOne({
-      where: { id: roleId } as any,
-      relations: ['permissions'],
+    const data = await this.prisma.role.findMany({
+      where,
+      orderBy: { name: 'asc' },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        status: true,
+      },
     });
 
-    if (!role) {
-      throw new NotFoundException('Role not found');
-    }
+    return {
+      data: data.map(role => ({
+        id: Number(role.id),
+        code: role.code,
+        name: role.name,
+        status: role.status,
+      })),
+    };
+  }
 
-    if (permissionIds.length > 0) {
-      const permissions = await this.permRepo.findBy({ id: In(permissionIds) });
-      if (permissions.length !== permissionIds.length) {
-        throw new BadRequestException('Some permission IDs are invalid');
-      }
-      role.permissions = permissions;
-    } else {
-      role.permissions = [];
-    }
-
-    const saved = await this.repository.save(role);
-    if (this.rbacCache && typeof this.rbacCache.bumpVersion === 'function') {
-      await this.rbacCache.bumpVersion().catch(() => undefined);
-    }
-    return saved;
+  /**
+   * Parse sort string to Prisma orderBy
+   */
+  private parseSort(sort: string | string[]): Prisma.RoleOrderByWithRelationInput[] {
+    const sorts = Array.isArray(sort) ? sort : [sort];
+    return sorts.map(s => {
+      const [field, direction] = s.split(':');
+      return { [field]: direction?.toLowerCase() === 'desc' ? 'desc' : 'asc' } as Prisma.RoleOrderByWithRelationInput;
+    });
   }
 }
-
-

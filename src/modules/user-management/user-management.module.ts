@@ -1,11 +1,4 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-
-// Import shared entities
-import { User } from '@/shared/entities/user.entity';
-import { Profile } from '@/shared/entities/profile.entity';
-import { Role } from '@/shared/entities/role.entity';
-import { Permission } from '@/shared/entities/permission.entity';
 
 // Import shared services
 import { UserService } from '@/modules/user-management/user/user/services/user.service';
@@ -20,12 +13,6 @@ import { UserUserModule } from '@/modules/user-management/user/user/user.module'
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([
-      User,
-      Profile,
-      Role,
-      Permission,
-    ]),
     // Admin modules
     AdminUserModule,
     AdminRoleModule,
@@ -40,7 +27,6 @@ import { UserUserModule } from '@/modules/user-management/user/user/user.module'
   exports: [
     // Export shared services for other modules to use
     UserService,
-    TypeOrmModule,
   ],
 })
 export class UserManagementModule {}
